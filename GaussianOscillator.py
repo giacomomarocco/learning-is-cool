@@ -86,9 +86,13 @@ class GaussianOscillator:
         Cxp = 1 / (2 * np.sqrt(self.eta)) * np.sqrt(self.eta - 1)/np.sqrt(self.eta + 1)
         return [Vx, Vp, Cxp]
     
-    def expectation_solver(self, gamma_fb = 0.1, n_periods = 50, dt = 0.01, initial_conditions =  np.array([20, 
-                         20,0]), steady_state_covs = False):
+    def expectation_solver(self, feedback_fn=None, gamma_fb=0.1, n_periods=50, dt=0.01,
+                           initial_conditions=np.array([20, 20, 0]),
+                           steady_state_covs=False):       
         
+        # Default to linear feedback if no function provided
+        if feedback_fn is None:
+            feedback_fn = lambda xc, pc: -gamma_fb * pc
         n_times = int(2*np.pi*n_periods / dt)
 
         if steady_state_covs == True:
@@ -116,8 +120,13 @@ class GaussianOscillator:
         for i in range(1, n_times):
             x, p, record = y[:, i-1]
             dW_i = dW[i-1]
+            u = feedback_fn(x, p)
             
-            dp = - self.omega**2 * x * dt  + np.sqrt(8*self.eta*self.k_jacobs) * cov_xp[i-1] * dW_i - (gamma_fb + self.gamma) * p * dt
+
+            dp = (-self.omega**2 * x * dt
+                  + np.sqrt(8*self.eta*self.k_jacobs) * cov_xp[i-1] * dW_i
+                  - (self.gamma) * p * dt
+                  + u * dt)
             p_new = p + dp
             
             dx = p_new * dt + np.sqrt(8*self.eta*self.k_jacobs) * var_x[i-1] * dW_i
@@ -169,3 +178,4 @@ class GaussianOscillator:
         # Sff = Sxx / (np.abs(chi)**2)     
         
         return f, Sxx
+    

@@ -4,7 +4,7 @@ save_data_on_exit = True
 save_history = True
 save_non_project_files = False
 project_type = 'empty-project-type'
-recent_files = ['GaussianOscillator.py', 'test_scripts.py', 'oscillator_example.py', '../../2025/Glasses/plot_projections.py']
+recent_files = ['test_scripts.py', 'GaussianOscillator.py', 'oscillator_example.py', 'learning_noisy_cooling.py', 'training_scripts.py', '../../../.spyder-py3/autosave/Axion PSD (1)-1.py']
 
 [main]
 version = 0.2.0
