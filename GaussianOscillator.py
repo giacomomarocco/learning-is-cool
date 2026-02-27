@@ -21,6 +21,19 @@ class GaussianOscillator:
         # The variable k in quant-ph/9812004 that matches our definition in variance eom
         self.k_jacobs = self.gamma_meas * self.omega/2
         
+    def dvariance(self, time, covariances):
+        # Returns the difference equation obeyed by the covariances
+        Vx, Vp, Cxp = covariances
+        
+        x0Squared = 1/(self.omega)
+
+        dVx = 2 * Cxp - 4 * self.eta * self.gamma_meas * Vx**2 / x0Squared
+        dVp = -2 * self.omega**2 * Cxp +  self.gamma_meas / x0Squared - 4 * self.eta * self.gamma_meas * Cxp**2 / x0Squared
+        dCxp = Vp - self.omega**2 * Vx - 4 * self.eta * self.gamma_meas * Vx * Cxp / x0Squared
+        return np.array([dVx, dVp, dCxp])
+
+        
+        
     def variance_solver(self, n_periods = 10, dt = 0.05):
         '''Returns an array of the variances as a function of time.
         Can specify the number of periods for which to simulate n_periods, and the time step dt.'''
@@ -32,26 +45,27 @@ class GaussianOscillator:
         y[:, 0] = init_cond
         times = [0]
         
-        def variance_DE(t, y_vec):
-            Vx, Vp, Cxp = y_vec
+        # def variance_DE(t, y_vec):
+        #     #This depends on time because there may be something (gas collision) that increases the variance at random times
+        #     Vx, Vp, Cxp = y_vec
             
-            x0Squared = 1/(self.omega)
+        #     x0Squared = 1/(self.omega)
 
-            dVx = 2 * Cxp - 4 * self.eta * self.gamma_meas * Vx**2 / x0Squared
-            dVp = -2 * self.omega**2 * Cxp +  self.gamma_meas / x0Squared - 4 * self.eta * self.gamma_meas * Cxp**2 / x0Squared
-            dCxp = Vp - self.omega**2 * Vx - 4 * self.eta * self.gamma_meas * Vx * Cxp / x0Squared
+        #     dVx = 2 * Cxp - 4 * self.eta * self.gamma_meas * Vx**2 / x0Squared
+        #     dVp = -2 * self.omega**2 * Cxp +  self.gamma_meas / x0Squared - 4 * self.eta * self.gamma_meas * Cxp**2 / x0Squared
+        #     dCxp = Vp - self.omega**2 * Vx - 4 * self.eta * self.gamma_meas * Vx * Cxp / x0Squared
                 
-            return np.array([dVx, dVp, dCxp])
+        #     return np.array([dVx, dVp, dCxp])
         
         for i in range(1, n_times):
             t = (i-1) * dt
             current_y = y[:, i-1]
             
             # RK4 method (note: your code says RK2 but implements RK4)
-            k1 = variance_DE(t, current_y)
-            k2 = variance_DE(t + dt/2, current_y + dt/2 * k1)
-            k3 = variance_DE(t + dt/2, current_y + dt/2 * k2)
-            k4 = variance_DE(t + dt, current_y + dt * k3)
+            k1 = self.dvariance(t, current_y)
+            k2 = self.dvariance(t + dt/2, current_y + dt/2 * k1)
+            k3 = self.dvariance(t + dt/2, current_y + dt/2 * k2)
+            k4 = self.dvariance(t + dt, current_y + dt * k3)
             times.append(t)
             y[:, i] = current_y + dt/6 * (k1 + 2*k2 + 2*k3 + k4)
         

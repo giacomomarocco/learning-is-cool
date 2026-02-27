@@ -12,12 +12,18 @@ import scipy
 
 
 #%%
-osc = GaussianOscillator(gamma_meas=5e-2, quality_factor=1e4)
+osc = GaussianOscillator(gamma_meas=5e-2, quality_factor=1e1)
 # plt.plot(osc.expectation_solver(n_periods = 100, dt = 0.008, gamma_fb = 0.02, steady_state_covs = False)[2][::50])
-(x, p, r), t = osc.expectation_solver(n_periods = 1000, dt = 0.1, gamma_fb = 0.01)
+(x, p, r), t = osc.expectation_solver(n_periods = 100, dt = 0.1, gamma_fb = 0.01)
+(Vxx, Vpp, Cxp), t = osc.variance_solver(n_periods=100, dt  = 0.1)
 #%%
-plt.plot(t[-500:], x[-500:])
-plt.plot(t[-500:], r[-500:])
+plt.plot(t, x)
+# plt.plot(t, r)
+#%%
+plt.semilogy(t, Vpp)
+plt.semilogy(t, Vpp)
+plt.semilogy(t, np.abs(Cxp))
+
 
 #%%
 f, Sxx = osc.position_PSD(t[2000:], x[2000:], nperseg = int(5e4))
