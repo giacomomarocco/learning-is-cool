@@ -35,6 +35,11 @@ learning_rate = 1e-3
 n_iterations = 1000
 eval_rate = 100
 
+# Add device detection near the top, after your hyperparameters
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"Using device: {device}")
+
+
 osc = GaussianOscillator(omega = omega,n_thermal=n_th, gamma_meas=gamma_BA, eta=eta)
 q_cost = (g_fb)**(-2)
 
@@ -100,14 +105,14 @@ nn_policy = nn.Sequential(
     nn.Linear(16, 16),
     nn.Tanh(),
     nn.Linear(16, 1)
-)
+).to(device)
     
 # nn_policy = nn.Linear(2, 1, bias=False)
 
 # Training environment
 train_env = TorchOscillatorEnv(osc, batch_size=batch_size, dt=dt,
                                horizon=horizon, cost_u_weight=q_cost,
-                               phase_space_range=5)
+                               phase_space_range=5, device=device)
 
 print("Training RL policy...")
 train_policy(nn_policy, train_env, n_iterations=n_iterations, lr=learning_rate, eval_every=eval_rate)
@@ -178,8 +183,11 @@ for i in range(n_traj):
 
 # RL performance
 eval_env = TorchOscillatorEnv(osc, batch_size=n_traj, dt=dt,
-                              horizon=horizon, phase_space_range=5)
-init_tensor = torch.tensor(initial_conditions, dtype=torch.float32).unsqueeze(1) # (n_traj, 1, 2)
+                              horizon=horizon, phase_space_range=5, device=device)
+
+# When creating the initial conditions tensor, put it on the device
+init_tensor = torch.tensor(initial_conditions, dtype=torch.float32, device=device).unsqueeze(1)
+
 eval_env.reset(initial_conditions=init_tensor)
 
 n_rl_traj = []
@@ -189,8 +197,8 @@ with torch.no_grad():
         state = eval_env.state()
         u = nn_policy(state).squeeze(-1)
         eval_env.step(u)
-        n_history.append(eval_env.n_bar().squeeze(-1).numpy()) # (n_traj,)
-
+        n_history.append(eval_env.n_bar().squeeze(-1).cpu().numpy())
+        
 n_history = np.array(n_history).T # (n_traj, horizon)
 for i in range(n_traj):
     n_rl_traj.append(np.mean(n_history[i, -horizon // 4:]))
