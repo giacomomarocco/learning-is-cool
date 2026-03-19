@@ -142,7 +142,8 @@ init_tensor = torch.tensor(initial_conditions, dtype=torch.float32, device=devic
 
 eval_env.reset(initial_conditions=init_tensor)
 
-    with torch.no_grad():
+n_history = []
+with torch.no_grad():
     for t in range(horizon):
         state = eval_env.state()
         u = nn_policy(state).squeeze(-1)
