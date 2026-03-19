@@ -31,10 +31,10 @@ eta = 0.2
 dt = 0.05
 n_th = 10
 horizon = 300
-batch_size = int(4096*2)
-learning_rate = 1e-3
-n_iterations = 1000
-eval_rate = 100
+batch_size = 32768
+learning_rate = 5e-5
+n_iterations = 500
+eval_rate = 50
 
 # Device detection
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

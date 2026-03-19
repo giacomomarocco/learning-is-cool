@@ -80,9 +80,9 @@ class TorchOscillatorEnv:
         self.x_true = self.xc.clone().detach()
         self.p_true = self.pc.clone().detach()
 
-        if self.mode == 'parametric':
-            self.Vxx = torch.full((self.batch_size, self.N), 1.0, device=self.device)
-            self.Vpp = torch.full((self.batch_size, self.N), 1.0, device=self.device)
+        if self.mode in ['parametric', 'combined']:
+            self.Vxx = torch.full((self.batch_size, self.N), (1.0 + self.n_thermal), device=self.device)
+            self.Vpp = torch.full((self.batch_size, self.N), (1.0 + self.n_thermal), device=self.device)
             self.Cxp = torch.zeros((self.batch_size, self.N), device=self.device)
 
         self.t = 0
@@ -107,7 +107,8 @@ class TorchOscillatorEnv:
     def step(self, raw_action):
         Vxx, Vpp, Cxp = self._get_covariances()
 
-        raw_action = raw_action.view(self.batch_size)
+        if self.mode != 'combined':
+            raw_action = raw_action.view(self.batch_size)
 
         n_a = self.n_bar()
         state_cost = torch.mean(self.omegas * (self.xc**2 + self.pc**2), dim=1)
@@ -143,9 +144,40 @@ class TorchOscillatorEnv:
             noise_x = (self.sqrt_2eta_gm * Vxx * dW).detach()
             noise_p = (self.sqrt_2eta_gm * Cxp * dW).detach()
 
-            new_pc = self.pc + (-self.omegas * self.xc * self.dt
-                     + noise_p
-                     + self.B * u_expanded * self.dt)
+            new_pc = self.pc + (-omega_mod * self.xc * self.dt
+                                 + noise_p)
+            new_xc = self.xc + (self.omegas * self.pc * self.dt + noise_x)
+
+            self.pc = new_pc
+            self.xc = new_xc
+
+            dVxx = (2.0 * self.omegas * Cxp
+                    - 4.0 * self.eta * self.gamma_meas * Vxx**2) * self.dt
+            dVpp = (-2.0 * omega_mod * Cxp
+                    + 4.0 * self.gamma_meas
+                    - 4.0 * self.eta * self.gamma_meas * Cxp**2) * self.dt
+            dCxp = (self.omegas * Vpp - omega_mod * Vxx
+                    - 4.0 * self.eta * self.gamma_meas * Vxx * Cxp) * self.dt
+
+            self.Vxx = torch.clamp(Vxx + dVxx, min=1e-4)
+            self.Vpp = torch.clamp(Vpp + dVpp, min=1e-4)
+            self.Cxp = Cxp + dCxp
+
+        elif self.mode == 'combined':
+            u_cold = raw_action[:, 0]
+            u_param = self.modulation_depth * torch.tanh(raw_action[:, 1])
+            cost = state_cost + self.cost_u_weight * (u_cold**2 + u_param**2)
+
+            u_cold_expanded = u_cold.unsqueeze(1).expand(-1, self.N)
+            u_param_expanded = u_param.unsqueeze(1).expand(-1, self.N)
+            omega_mod = self.omegas * (1.0 + u_param_expanded)
+
+            noise_x = (self.sqrt_2eta_gm * Vxx * dW).detach()
+            noise_p = (self.sqrt_2eta_gm * Cxp * dW).detach()
+
+            new_pc = self.pc + (-omega_mod * self.xc * self.dt
+                                 + noise_p
+                                 + self.B * u_cold_expanded * self.dt)
             new_xc = self.xc + (self.omegas * self.pc * self.dt + noise_x)
 
             self.pc = new_pc
