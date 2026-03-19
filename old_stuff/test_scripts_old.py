@@ -1,3 +1,7 @@
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -7,7 +11,7 @@ Created on Mon Feb  9 09:59:00 2026
 """
 import numpy as np
 import matplotlib.pyplot as plt
-from GaussianOscillator import GaussianOscillator
+from gaussian_oscillator import GaussianOscillator
 import scipy
 
 

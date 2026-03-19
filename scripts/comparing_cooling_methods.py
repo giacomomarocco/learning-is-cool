@@ -6,6 +6,10 @@ Created on Wed Mar  4 11:34:21 2026
 @author: giacomomarocco
 """
 
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src', 'learn_to_cool'))
+
 from gaussian_oscillator import GaussianOscillator
 import numpy as np
 import matplotlib.pyplot as plt
@@ -22,8 +26,9 @@ g_fb = 0.1
 g_fb_str = f"{g_fb}".replace(".", "")
 eta = 0.2
 n_min = (eta**(-1/2) - 1)/2
+dt = 0.05
 
-osc = GaussianOscillator(n_thermal = 10, gamma_meas= gamma_BA, eta = eta, n_periods=250)
+osc = GaussianOscillator(n_thermal = 10, gamma_meas= gamma_BA, eta = eta)
 
 fb = FeedbackForces(g_fb=g_fb, omega=osc.omega)
 
@@ -39,12 +44,13 @@ initial_conditions[:, 2] = 0  # photocurrent starts at 0
 
 #%%
 n_bars = []
-covs = osc.variance_solver()
+horizon_periods = 250
+covs = osc.variance_solver(n_periods=horizon_periods, dt=dt)
 for i in range(n_traj):
-    result = osc.expectation_solver(feedback_fn = fb.momentum_feedback(), initial_conditions=initial_conditions[i], gamma_fb = g_fb, covariances=covs)
+    result = osc.expectation_solver(feedback_fn = fb.momentum_feedback(), initial_conditions=initial_conditions[i], gamma_fb = g_fb, n_periods=horizon_periods, dt=dt)
     n_bar = osc.find_n_bar(result['xc'], result['pc'],  covs['Vxx'], covs['Vpp'])
     n_bars.append(n_bar)
-    
+
 # Average over trajectories
 n_bar_avg = np.mean(n_bars, axis=0)
 
@@ -69,7 +75,7 @@ plt.show()
 
 n_bars_optimal = []
 for i in range(n_traj):
-    result = osc.expectation_solver(feedback_fn=fb.optimal_feedback(), initial_conditions=initial_conditions[i], covariances = covs)
+    result = osc.expectation_solver(feedback_fn=fb.optimal_feedback(), initial_conditions=initial_conditions[i], n_periods=horizon_periods, dt=dt)
     n_bar = osc.find_n_bar(result['xc'], result['pc'], covs['Vxx'], covs['Vpp'])
     n_bars_optimal.append(n_bar)
 
@@ -105,7 +111,7 @@ plt.savefig(os.path.join(dirname, f"figures/occupation_number_comparison_g{g_fb_
 plt.show()
 
 #%%
-osc = GaussianOscillator(n_thermal = 10, gamma_meas= gamma_BA, eta = eta, n_periods=50)
+osc = GaussianOscillator(n_thermal = 10, gamma_meas= gamma_BA, eta = eta)
 fb = FeedbackForces(g_fb=g_fb, omega=osc.omega)
 
 
@@ -120,21 +126,23 @@ initial_conditions[:, 2] = 0  # photocurrent starts at 0
 
 feedback_gains = np.linspace(0.2, 5, 15)
 
-covs = osc.variance_solver()
+horizon_periods_short = 50
+dt_eval = 0.01
+covs = osc.variance_solver(n_periods=horizon_periods_short, dt=dt_eval)
 n_steady_opt = []
 n_steady_v = []
 
 for g_fb in feedback_gains:
     n_opt_traj = []
     n_v_traj = []
-    
+
     fb = FeedbackForces(g_fb=g_fb, omega=osc.omega)
     for i in range(n_traj):
-        result = osc.expectation_solver(feedback_fn=fb.optimal_feedback(), initial_conditions=initial_conditions[i], gamma_fb=g_fb, covariances=covs)
+        result = osc.expectation_solver(feedback_fn=fb.optimal_feedback(), initial_conditions=initial_conditions[i], gamma_fb=g_fb, n_periods=horizon_periods_short, dt=dt_eval)
         n_bar = osc.find_n_bar(result['xc'], result['pc'], covs['Vxx'], covs['Vpp'])
         n_opt_traj.append(np.mean(n_bar[-len(n_bar)//4:]))
-        
-        result = osc.expectation_solver(feedback_fn=fb.momentum_feedback(), initial_conditions=initial_conditions[i], gamma_fb=g_fb, covariances=covs)
+
+        result = osc.expectation_solver(feedback_fn=fb.momentum_feedback(), initial_conditions=initial_conditions[i], gamma_fb=g_fb, n_periods=horizon_periods_short, dt=dt_eval)
         n_bar = osc.find_n_bar(result['xc'], result['pc'], covs['Vxx'], covs['Vpp'])
         n_v_traj.append(np.mean(n_bar[-len(n_bar)//4:]))
         

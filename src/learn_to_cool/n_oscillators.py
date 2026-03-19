@@ -44,28 +44,28 @@ class GaussianOscillatorArray:
         Vp = covariances[:, 1]
         Cxp = covariances[:, 2]
 
-        x0Sq = 1.0 / self.omegas  # per-oscillator
-
-        dVx = (2 * Cxp
-               - 4 * self.eta * self.gamma_meas * Vx**2 / x0Sq)
-        dVp = (-2 * self.omegas**2 * Cxp
-               + self.gamma_meas / x0Sq
-               - 4 * self.eta * self.gamma_meas * Cxp**2 / x0Sq)
-        dCxp = (Vp
-                - self.omegas**2 * Vx
-                - 4 * self.eta * self.gamma_meas * Vx * Cxp / x0Sq)
+        dVx = (2 * self.omegas * Cxp
+               - 4 * self.eta * self.gamma_meas * Vx**2)
+        dVp = (-2 * self.omegas * Cxp
+               + 4 * self.gamma_meas
+               - 4 * self.eta * self.gamma_meas * Cxp**2)
+        dCxp = (self.omegas * (Vp - Vx)
+                - 4 * self.eta * self.gamma_meas * Vx * Cxp)
 
         return np.column_stack([dVx, dVp, dCxp])
 
-    def variance_solver(self):
+    def variance_solver(self, n_periods=None, dt=None):
         """
         Returns
         -------
         dict with keys 'Vxx', 'Vpp', 'Cxp' (each shape (N, n_times))
         and 'times' (shape (n_times,)).
         """
-        dt = self.dt
-        n_times = int(2 * np.pi * self.n_periods / dt)
+        if n_periods is None:
+            n_periods = self.n_periods
+        if dt is None:
+            dt = self.dt
+        n_times = int(2 * np.pi * n_periods / dt)
 
         # initial conditions: shape (N, 3)
         init_val = (1 + self.n_thermal) / 2
@@ -85,9 +85,8 @@ class GaussianOscillatorArray:
             k4 = self.dvariance(t + dt, cur + dt * k3)
             y[i] = cur + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
 
-        # Rescale to dimensionless units (per-oscillator omega)
-        Vxx = y[:, :, 0].T * self.omegas[:, None] * 2        # shape (N, n_times)
-        Vpp = y[:, :, 1].T * 2 / self.omegas[:, None]
+        Vxx = y[:, :, 0].T        # shape (N, n_times)
+        Vpp = y[:, :, 1].T
         Cxp = y[:, :, 2].T
 
         return {'Vxx': Vxx, 'Vpp': Vpp, 'Cxp': Cxp, 'times': times}
@@ -97,11 +96,10 @@ class GaussianOscillatorArray:
         Returns arrays of shape (N,) for Vx, Vp, Cxp
         (eq. 51 of quant-ph/9812004, evaluated per oscillator).
         """
-        r = self.omegas**2 / (2 * self.eta * self.k_jacobs)
-        xi = np.sqrt(1 + 4 / (self.eta * r**2))
-        Vx = 1 / (np.sqrt(2 * self.eta) * self.omegas) / np.sqrt(xi + 1)
-        Vp = self.omegas / np.sqrt(2 * self.eta) * xi / np.sqrt(xi + 1)
-        Cxp = 1 / (2 * np.sqrt(self.eta)) * np.sqrt(xi - 1) / np.sqrt(xi + 1)
+        xi = np.sqrt(1 + 4 * self.eta * self.gamma_meas**2 / self.omegas**2)
+        Vx = 2 / (np.sqrt(2 * self.eta) * np.sqrt(xi + 1))
+        Vp = 2 * xi / (np.sqrt(2 * self.eta) * np.sqrt(xi + 1))
+        Cxp = np.sqrt(xi - 1) / (np.sqrt(self.eta) * np.sqrt(xi + 1))
         return Vx, Vp, Cxp
 
     def expectation_solver(self, feedback_fns=None, common_feedback_fn=None,
@@ -154,27 +152,26 @@ class GaussianOscillatorArray:
         times = np.arange(n_times) * dt
     
         dW = np.sqrt(dt) * np.random.randn(self.N, n_times)
-        sqrt_2eta_gm = np.sqrt(2 * self.eta * self.gamma_meas)
-    
+        sqrt_2eta_gm = 2 * np.sqrt(self.eta * self.gamma_meas)
+
         for i in range(1, n_times):
             x = y[:, 0, i - 1]
             p = y[:, 1, i - 1]
             dW_i = dW[:, i - 1]
-    
+
             if use_common:
                 force = common_feedback_fn(x, p)       # scalar
                 u = np.full(self.N, force)              # same force on all
             else:
                 u = np.array([fn(x[j], p[j])
                               for j, fn in enumerate(feedback_fns)])
-    
-            dp = (-self.omegas**2 * x * dt
+
+            dp = (-self.omegas * x * dt
                   + sqrt_2eta_gm * cov_xp[:, i - 1] * dW_i
-                  - self.gammas * p * dt
                   + u * dt)
             p_new = p + dp
-    
-            dx = (p_new * dt
+
+            dx = (self.omegas * p_new * dt
                   + sqrt_2eta_gm * var_x[:, i - 1] * dW_i)
             x_new = x + dx
     

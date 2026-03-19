@@ -35,10 +35,10 @@ class OptimalFeedbackNOscillators:
 
         self.A_full = self._build_A()
         self.B_full = self._build_B()
-        self.P_full = self._build_P()
+        self.H_full = self._build_H()
         self.Q_full = self._build_Q()
 
-        self.U = self._solve_care()
+        self.P = self._solve_care()
         self.K = self._compute_gain()
 
     def _build_A(self):
@@ -51,88 +51,159 @@ class OptimalFeedbackNOscillators:
             A[i + 1, i] = -omega
         return A
 
-    def _build_B(self):
-        """Control matrix: (1/N) * (J_N ⊗ B_single), B_single = [[0,0],[0,1]]."""
-        B_single = np.array([[0, 0],
-                              [0, 1]])
-        J_N = np.ones((self.N, self.N))
-        return (1.0 / self.N) * np.kron(J_N, B_single)
+    def _build_B(self, omega_bar=None):
+        """
+        Control vector B (2N x 1) from notes/multiparticle_feedback.md.
+        B_a = omega_a * sqrt(omega_a / omega_bar) * [0, 1]^T
+        """
+        if omega_bar is None:
+            omega_bar = self.omegas[0]
+        B = np.zeros((2 * self.N, 1))
+        for a, omega in enumerate(self.omegas):
+            B[2 * a + 1, 0] = omega * np.sqrt(omega / omega_bar)
+        return B
 
-    def _build_P(self):
-        """State cost: block-diag(omega_a * I_2) for each oscillator."""
+    def _build_H(self):
+        """
+        State cost matrix H from notes/multiparticle_feedback.md.
+        H = (1/4N) * diag(omega_1 I_2, ..., omega_N I_2)
+        """
         dim = 2 * self.N
-        P = np.zeros((dim, dim))
+        H = np.zeros((dim, dim))
         for a, omega in enumerate(self.omegas):
             i = 2 * a
-            P[i:i + 2, i:i + 2] = omega * np.eye(2)
-        return P
+            H[i:i + 2, i:i + 2] = omega * np.eye(2)
+        return H / (4.0 * self.N)
 
+
+    # def _build_Q(self):
+    #     """Control cost: q * I_{2N}."""
+    #     return self.q * np.eye(2 * self.N)
     def _build_Q(self):
-        """Control cost: q * I_{2N}."""
-        return self.q * np.eye(2 * self.N)
+        """Control cost scalar q"""
+        return np.array([[self.q]]) 
 
     def _solve_care(self):
         """
         Solve the CARE:
-          A^T X + X A - X B R^{-1} B^T X + Q_state = 0
-        with Q_state -> P_full, R -> Q_full.
+          A^T P + P A - P B  B^T P / q + H = 0
         """
-        return solve_continuous_are(self.A_full, self.B_full, self.P_full, self.Q_full)
+        return solve_continuous_are(self.A_full, self.B_full, self.H_full, self.Q_full)
+
+    # def _compute_gain(self):
+    #     """K = Q^{-1} B^T U."""
+    #     Q_inv = np.linalg.inv(self.Q_full)
+    #     return Q_inv @ self.B_full.T @ self.U
 
     def _compute_gain(self):
-        """K = Q^{-1} B^T U."""
-        Q_inv = np.linalg.inv(self.Q_full)
-        return Q_inv @ self.B_full.T @ self.U
+        """K = (1/q) * B^T @ U, a 1 x 2N row vector."""
+        return (1.0 / self.q) * self.B_full.T @ self.P
+
+    # def optimal_feedback_vec(self):
+    #     """
+    #     Return the effective gain vector g of length 2N such that
+    #     force = -g @ state.
+
+    #     The common scalar force on every oscillator is
+    #       force = (1/N) * sum_a u_{p_a}
+    #     where u = -K @ state. So g = (1/N) * sum_a K[2a+1, :].
+    #     """
+    #     p_rows = self.K[1::2, :]  # rows 1, 3, 5, ... (momentum components)
+    #     g = p_rows.mean(axis=0)   # (1/N) * sum
+    #     return g
 
     def optimal_feedback_vec(self):
-        """
-        Return the effective gain vector g of length 2N such that
-        force = -g @ state.
+        """Return the gain vector g (length 2N) such that u = -g @ state."""
+        return self.K.flatten()
 
-        The common scalar force on every oscillator is
-          force = (1/N) * sum_a u_{p_a}
-        where u = -K @ state. So g = (1/N) * sum_a K[2a+1, :].
-        """
-        p_rows = self.K[1::2, :]  # rows 1, 3, 5, ... (momentum components)
-        g = p_rows.mean(axis=0)   # (1/N) * sum
-        return g
+    # def optimal_feedback(self):
+    #     """
+    #     Return a function f(state) -> scalar force, where
+    #     state is a 1-D array [xc1, pc1, xc2, pc2, ..., xcN, pcN].
+    #     """
+    #     g = self.optimal_feedback_vec()
+
+    #     def feedback_fn(state):
+    #         return -g @ state
+
+    #     return feedback_fn
+
 
     def optimal_feedback(self):
-        """
-        Return a function f(state) -> scalar force, where
-        state is a 1-D array [xc1, pc1, xc2, pc2, ..., xcN, pcN].
-        """
+        """Return a function f(state) -> scalar force."""
         g = self.optimal_feedback_vec()
-
         def feedback_fn(state):
             return -g @ state
-
         return feedback_fn
+    
+    
+    # def feedback_for_array(self):
+    #     """
+    #     Return a list of N feedback functions compatible with
+    #     GaussianOscillatorArray.expectation_solver, which expects
+    #     one function per oscillator with signature fn(x_a, p_a).
 
-    def feedback_for_array(self):
-        """
-        Return a list of N feedback functions compatible with
-        GaussianOscillatorArray.expectation_solver, which expects
-        one function per oscillator with signature fn(x_a, p_a).
+    #     Each returned function closes over the *shared* state and
+    #     must be called together inside a wrapper that first assembles
+    #     the full state, computes the common force once, and distributes
+    #     it.  This method therefore returns a single callable
 
-        Each returned function closes over the *shared* state and
-        must be called together inside a wrapper that first assembles
-        the full state, computes the common force once, and distributes
-        it.  This method therefore returns a single callable
+    #         common_force_fn(xs, ps) -> scalar
 
-            common_force_fn(xs, ps) -> scalar
+    #     where xs and ps are length-N arrays of the current conditional
+    #     means, plus a helper that wraps it into per-oscillator callables.
+    #     """
+    #     g = self.optimal_feedback_vec()
 
-        where xs and ps are length-N arrays of the current conditional
-        means, plus a helper that wraps it into per-oscillator callables.
-        """
+    #     def common_force(xs, ps):
+    #         state = np.empty(2 * self.N)
+    #         state[0::2] = xs
+    #         state[1::2] = ps
+    #         return -g @ state
+
+    #     return common_force
+    
+    
+    def common_force_fn(self):
+        """Return common_force(xs, ps) -> scalar, compatible with array solver."""
         g = self.optimal_feedback_vec()
-
         def common_force(xs, ps):
             state = np.empty(2 * self.N)
             state[0::2] = xs
             state[1::2] = ps
             return -g @ state
-
+        return common_force
+    
+    def optimal_feedback_nn(self, policy, u_max=25.0):
+        """
+        Return a feedback function that uses a trained neural network policy.
+        
+        Parameters
+        ----------
+        policy : torch.nn.Module
+            Trained policy network that takes state [xc1, pc1, xc2, pc2, ...]
+            and outputs a raw control signal.
+        u_max : float
+            Maximum control force (policy output is passed through u_max * tanh).
+        
+        Returns
+        -------
+        common_force_fn : callable
+            Function with signature common_force(xs, ps) -> scalar,
+            compatible with feedback_for_array().
+        """
+        import torch
+    
+        def common_force(xs, ps):
+            state = np.empty(2 * self.N)
+            state[0::2] = xs
+            state[1::2] = ps
+            state_tensor = torch.FloatTensor(state)
+            with torch.no_grad():
+                raw_u = policy(state_tensor).squeeze()
+                u = u_max * torch.tanh(raw_u)
+            return u.item()
+    
         return common_force
     
 # Steady-state conditional covariance (Kalman filter)

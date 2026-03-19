@@ -1,1 +1,4 @@
 figures/
+*.png
+*.pdf
+/notes/

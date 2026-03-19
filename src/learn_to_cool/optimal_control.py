@@ -25,5 +25,7 @@ class FeedbackForces:
         gamma_x = alpha - 1
         gamma_p = np.sqrt(1/r - 2 + 2 * alpha)
         return lambda xc, pc: - gamma_x * xc - gamma_p * pc 
+    def no_feedback(self):
+        return lambda xc, pc: 0.
 
     
