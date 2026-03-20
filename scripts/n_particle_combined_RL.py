@@ -11,6 +11,7 @@ import os
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src', 'learn_to_cool'))
 
 from n_oscillators import GaussianOscillatorArray
+from optimal_feedback_n_oscillators import OptimalFeedbackNOscillators
 from torch_oscillator_env import TorchOscillatorEnv
 import numpy as np
 import matplotlib.pyplot as plt
@@ -29,9 +30,9 @@ gamma_BA = 18.8 / 104
 eta = 0.2
 dt = 0.05
 horizon = 300
-batch_size = 512
+batch_size = 2046
 modulation_depth = 0.5  # max fractional change in omega^2
-g_fb = 0.2
+g_fb = 0.8
 q_cost = (g_fb)**(-2)
 
 # Array of N particles with different frequencies
@@ -245,8 +246,9 @@ with torch.no_grad():
 
 n_final_avg = np.mean(n_bars_history[:, :, -n_compare_horizon // 4:], axis=(1, 2))
 
-n_min_theory_cd = (eta ** (-0.5) - 1) / 2
-print(f"Theoretical min (CD only, single particle): n_min = {n_min_theory_cd:.4f}")
+lqr = OptimalFeedbackNOscillators(np.array(omegas), q=q_cost)
+n_min_theory_cd = lqr.mean_nbar(eta, gamma_BA)
+print(f"Theoretical min (optimal LQR, {N} oscillators): n_min = {n_min_theory_cd:.4f}")
 print("-" * 60)
 for i in range(N):
     print(f"Oscillator {i} (w={omegas[i]:.2f}): n_bar = {n_final_avg[i]:.4f}")
