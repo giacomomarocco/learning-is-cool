@@ -36,6 +36,24 @@ learning_rate = 5e-5
 n_iterations = 500
 eval_rate = 50
 
+# CLI overrides
+from cli_utils import parse_overrides
+overrides = parse_overrides()
+n_th = overrides.get('n_th', n_th)
+initial_temperature = overrides.get('initial_temperature', initial_temperature)
+gamma_BA = overrides.get('gamma_BA', gamma_BA)
+eta = overrides.get('eta', eta)
+dt = overrides.get('dt', dt)
+horizon = overrides.get('horizon', horizon)
+batch_size = overrides.get('batch_size', batch_size)
+g_fb = overrides.get('g_fb', g_fb)
+learning_rate = overrides.get('learning_rate', learning_rate)
+n_iterations = overrides.get('n_iterations', n_iterations)
+eval_rate = overrides.get('eval_rate', eval_rate)
+omegas = overrides.get('omegas', omegas)
+if overrides:
+    print(f"CLI overrides: {overrides}")
+
 # Device detection
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")

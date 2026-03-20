@@ -31,6 +31,20 @@ horizon = 200
 batch_size = 512
 modulation_depth = 0.5  # max fractional change in omega^2
 
+# CLI overrides
+from cli_utils import parse_overrides
+overrides = parse_overrides()
+n_th = overrides.get('n_th', n_th)
+initial_temperature = overrides.get('initial_temperature', initial_temperature)
+gamma_BA = overrides.get('gamma_BA', gamma_BA)
+eta = overrides.get('eta', eta)
+dt = overrides.get('dt', dt)
+horizon = overrides.get('horizon', horizon)
+batch_size = overrides.get('batch_size', batch_size)
+modulation_depth = overrides.get('modulation_depth', modulation_depth)
+if overrides:
+    print(f"CLI overrides: {overrides}")
+
 osc = GaussianOscillator(n_thermal=n_th, gamma_meas=gamma_BA, eta=eta)
 
 def torch_rollout_env(policy, env, horizon):

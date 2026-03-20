@@ -33,6 +33,22 @@ modulation_depth = 0.5  # max fractional change in omega^2
 g_fb = 0.2
 q_cost = (g_fb)**(-2)
 
+# CLI overrides
+from cli_utils import parse_overrides
+overrides = parse_overrides()
+n_th = overrides.get('n_th', n_th)
+initial_temperature = overrides.get('initial_temperature', initial_temperature)
+gamma_BA = overrides.get('gamma_BA', gamma_BA)
+eta = overrides.get('eta', eta)
+dt = overrides.get('dt', dt)
+horizon = overrides.get('horizon', horizon)
+batch_size = overrides.get('batch_size', batch_size)
+modulation_depth = overrides.get('modulation_depth', modulation_depth)
+g_fb = overrides.get('g_fb', g_fb)
+q_cost = (g_fb)**(-2)
+if overrides:
+    print(f"CLI overrides: {overrides}")
+
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 

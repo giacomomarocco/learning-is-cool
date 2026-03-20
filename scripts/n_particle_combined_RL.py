@@ -30,14 +30,33 @@ gamma_BA = 18.8 / 104
 eta = 0.2
 dt = 0.05
 horizon = 300
-batch_size = 2046
+batch_size = 1024
 modulation_depth = 0.5  # max fractional change in omega^2
 g_fb = 0.8
 q_cost = (g_fb)**(-2)
+n_iterations = 500
 
 # Array of N particles with different frequencies
 omegas = [1.0, 1.05, 1.1]
+
+# CLI overrides
+from cli_utils import parse_overrides
+overrides = parse_overrides()
+n_th = overrides.get('n_th', n_th)
+initial_temperature = overrides.get('initial_temperature', initial_temperature)
+gamma_BA = overrides.get('gamma_BA', gamma_BA)
+eta = overrides.get('eta', eta)
+dt = overrides.get('dt', dt)
+horizon = overrides.get('horizon', horizon)
+batch_size = overrides.get('batch_size', batch_size)
+modulation_depth = overrides.get('modulation_depth', modulation_depth)
+g_fb = overrides.get('g_fb', g_fb)
+n_iterations = overrides.get('n_iterations', n_iterations)
+omegas = overrides.get('omegas', omegas)
+q_cost = (g_fb)**(-2)
 N = len(omegas)
+if overrides:
+    print(f"CLI overrides: {overrides}")
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
@@ -58,7 +77,7 @@ def torch_rollout_env(policy, env, horizon):
 # ============================================================
 # Training
 # ============================================================
-def train_policy(policy, env, n_iterations=1500, lr=0.0005, eval_every=100):
+def train_policy(policy, env, n_iterations=1500, lr=0.0005, eval_every=50):
     optimizer = torch.optim.Adam(policy.parameters(), lr=lr)
     history = []
 
@@ -111,7 +130,7 @@ train_env = TorchOscillatorEnv(osc_array, batch_size=batch_size, dt=dt,
 history_combined = train_policy(
     combined_policy,
     train_env,
-    n_iterations=1500,
+    n_iterations=500,
     lr=0.0005
 )
 
