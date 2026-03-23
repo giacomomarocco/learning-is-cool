@@ -187,27 +187,48 @@ def simulate_n_particle_trajectory(policy, env, horizon_sim):
     with torch.no_grad():
         for t in range(horizon_sim):
             # env.xc is (1, N, 2) — record x-mode
-            for i in range(N):
-                x_history[i].append(env.xc[0, i, 0].item())
-                p_history[i].append(env.pc[0, i, 0].item())
+            # for i in range(N):
+            #     x_history[i].append(env.xc[0, i, 0].item())
+            #     p_history[i].append(env.pc[0, i, 0].item())
 
+            # times.append(t * env.dt)
+
+            # n_bars = env.n_bar() # (1, N)
+            # for i in range(N):
+            #     n_history[i].append(n_bars[0, i].item())
+
+            # u_raw = policy(state) # (1, 2)
+            # u_cold = u_raw[0, 0]
+            # u_param = env.modulation_depth * torch.tanh(u_raw[0, 1])
+            # u_cold_history.append(u_cold.item())
+            # u_param_history.append(u_param.item())
+
+            # env.step(u_raw)
+            # state = env.state()
+            x_history.append(env.xc[0].cpu().numpy().copy())   # (N, 2)
+            p_history.append(env.pc[0].cpu().numpy().copy())   # (N, 2)
             times.append(t * env.dt)
-
-            n_bars = env.n_bar() # (1, N)
-            for i in range(N):
-                n_history[i].append(n_bars[0, i].item())
-
-            u_raw = policy(state) # (1, 2)
+            
+            # Per-mode n_bar: (1, N, 2)
+            n_per_mode = (env.xc**2 + env.Vxx + env.pc**2 + env.Vpp) / 4.0 - 0.5
+            n_history.append(n_per_mode[0].cpu().numpy().copy())  # (N, 2)
+            
+            u_raw = policy(state)
             u_cold = u_raw[0, 0]
             u_param = env.modulation_depth * torch.tanh(u_raw[0, 1])
             u_cold_history.append(u_cold.item())
             u_param_history.append(u_param.item())
-
+            
             env.step(u_raw)
             state = env.state()
 
-    return (np.array(times), np.array(x_history), np.array(p_history),
-            np.array(u_cold_history), np.array(u_param_history), np.array(n_history))
+        # Stack: (horizon, N, 2) -> transpose to (N, 2, horizon)
+        x_hist = np.array(x_history).transpose(1, 2, 0)
+        p_hist = np.array(p_history).transpose(1, 2, 0)
+        n_hist = np.array(n_history).transpose(1, 2, 0)
+    return (np.array(times), x_hist, p_hist,
+            np.array(u_cold_history), np.array(u_param_history), n_hist)
+
 
 sim_horizon = 2000
 eval_env = TorchOscillatorEnv(osc_array, batch_size=1, dt=dt,
@@ -263,17 +284,31 @@ compare_env = TorchOscillatorEnv(osc_array, batch_size=n_traj, dt=dt,
                                  device=device)
 compare_env.reset()
 
-n_bars_history = np.zeros((N, n_traj, n_compare_horizon))
+# n_bars_history = np.zeros((N, n_traj, n_compare_horizon))
+
+# with torch.no_grad():
+#     for t in range(n_compare_horizon):
+#         # env.n_bar() returns (n_traj, N)
+#         n_bars_history[:, :, t] = compare_env.n_bar().cpu().numpy().T
+#         state = compare_env.state()
+#         u_raw = combined_policy(state)
+#         compare_env.step(u_raw)
+
+# n_final_avg = np.mean(n_bars_history[:, :, -n_compare_horizon // 4:], axis=(1, 2))
+
+n_bars_history = np.zeros((N, 2, n_traj, n_compare_horizon))
 
 with torch.no_grad():
     for t in range(n_compare_horizon):
-        # env.n_bar() returns (n_traj, N)
-        n_bars_history[:, :, t] = compare_env.n_bar().cpu().numpy().T
+        n_per_mode = (compare_env.xc**2 + compare_env.Vxx
+                      + compare_env.pc**2 + compare_env.Vpp) / 4.0 - 0.5  # (n_traj, N, 2)
+        n_bars_history[:, :, :, t] = n_per_mode.cpu().numpy().transpose(1, 2, 0)
         state = compare_env.state()
         u_raw = combined_policy(state)
         compare_env.step(u_raw)
 
-n_final_avg = np.mean(n_bars_history[:, :, -n_compare_horizon // 4:], axis=(1, 2))
+n_final_avg = np.mean(n_bars_history[:, :, :, -n_compare_horizon // 4:], axis=(2, 3))  # (N, 2)
+
 
 lqr = OptimalFeedbackNOscillators(omegas, q=q_cost)
 n_min_theory_cd = lqr.steady_state_nbar(eta, gamma_BA)
@@ -294,21 +329,47 @@ zero_env = TorchOscillatorEnv(osc_array, batch_size=n_traj, dt=dt,
                               device=device)
 zero_env.reset()
 
-n_bars_zero = np.zeros((N, n_traj, n_compare_horizon))
+# n_bars_zero = np.zeros((N, n_traj, n_compare_horizon))
+
+# with torch.no_grad():
+#     for t in range(n_compare_horizon):
+#         n_bars_zero[:, :, t] = zero_env.n_bar().cpu().numpy().T
+#         state = zero_env.state()
+#         u_zero = torch.zeros(n_traj, 2, device=device)
+#         zero_env.step(u_zero)
+
+# n_final_zero = np.mean(n_bars_zero[:, :, -n_compare_horizon // 4:], axis=(1, 2))
+
+n_bars_zero = np.zeros((N, 2, n_traj, n_compare_horizon))
 
 with torch.no_grad():
     for t in range(n_compare_horizon):
-        n_bars_zero[:, :, t] = zero_env.n_bar().cpu().numpy().T
+        n_per_mode = (zero_env.xc**2 + zero_env.Vxx
+                      + zero_env.pc**2 + zero_env.Vpp) / 4.0 - 0.5
+        n_bars_zero[:, :, :, t] = n_per_mode.cpu().numpy().transpose(1, 2, 0)
         state = zero_env.state()
         u_zero = torch.zeros(n_traj, 2, device=device)
         zero_env.step(u_zero)
 
-n_final_zero = np.mean(n_bars_zero[:, :, -n_compare_horizon // 4:], axis=(1, 2))
+n_final_zero = np.mean(n_bars_zero[:, :, :, -n_compare_horizon // 4:], axis=(2, 3))  # (N, 2)
 
 for i in range(N):
-    print(f"Oscillator {i} (w={omegas[i,0]:.2f},{omegas[i,1]:.2f}): n_bar (no feedback) = {n_final_zero[i]:.4f}")
+    print(f"Oscillator {i} (w={omegas[i,0]:.2f},{omegas[i,1]:.2f}):")
+    print(f"  x-mode: n_bar (no feedback) = {n_final_zero[i,0]:.4f}")
+    print(f"  y-mode: n_bar (no feedback) = {n_final_zero[i,1]:.4f}")
+
+# for i in range(N):
+#     print(f"Oscillator {i} (w={omegas[i,0]:.2f},{omegas[i,1]:.2f}): n_bar (no feedback) = {n_final_zero[i]:.4f}")
+
+# for i in range(N):
+#     print(f"Oscillator {i} (w={omegas[i,0]:.2f},{omegas[i,1]:.2f}): n_bar = {n_final_avg[i]:.4f}, n_min (LQR x-mode) = {n_min_theory_cd[i]:.4f}")
 
 for i in range(N):
-    print(f"Oscillator {i} (w={omegas[i,0]:.2f},{omegas[i,1]:.2f}): n_bar = {n_final_avg[i]:.4f}, n_min (LQR x-mode) = {n_min_theory_cd[i]:.4f}")
+    print(f"Oscillator {i} (w={omegas[i,0]:.2f},{omegas[i,1]:.2f}):")
+    print(f"  x-mode: n_bar = {n_final_avg[i,0]:.4f}, n_min (LQR) = {n_min_theory_cd[i]:.4f}")
+    print(f"  y-mode: n_bar = {n_final_avg[i,1]:.4f}  (no direct feedback)")
+    
 print("-" * 60)
-print(f"Average n_bar across all oscillators: {np.mean(n_final_avg):.4f}")
+print(f"Average n_bar (x-mode): {np.mean(n_final_avg[:, 0]):.4f}")
+print(f"Average n_bar (y-mode): {np.mean(n_final_avg[:, 1]):.4f}")
+print(f"Average n_bar (overall): {np.mean(n_final_avg):.4f}")
