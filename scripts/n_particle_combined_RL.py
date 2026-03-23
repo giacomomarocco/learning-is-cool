@@ -176,10 +176,9 @@ def simulate_n_particle_trajectory(policy, env, horizon_sim):
     state = env.reset()
 
     # Store histories for each oscillator: list of length N
-    x_history = [[] for _ in range(N)]
-    p_history = [[] for _ in range(N)]
-    n_history = [[] for _ in range(N)]
-
+    x_history = []
+    p_history = []
+    n_history = []
     u_cold_history = []
     u_param_history = []
     times = []
@@ -244,8 +243,10 @@ times, x_sim, p_sim, u_c_sim, u_p_sim, n_sim = simulate_n_particle_trajectory(
 fig, axes = plt.subplots(4, 1, figsize=(10, 10), sharex=True)
 
 for i in range(N):
-    axes[0].plot(times, x_sim[i], lw=0.5, label=fr"$\omega_{i}={omegas[i,0]:.2f}$")
-axes[0].set_ylabel(r'$\langle x \rangle_c$')
+    axes[0].plot(times, x_sim[i, 0], lw=0.5, label=fr"$\omega_{{x,{i}}}={omegas[i,0]:.2f}$")
+    axes[0].plot(times, x_sim[i, 1], lw=0.5, ls='--', label=fr"$\omega_{{y,{i}}}={omegas[i,1]:.2f}$")
+    axes[0].set_ylabel(r'$\langle x \rangle_c$')
+    
 axes[0].set_title(f'N={N} Combined feedback trajectory')
 axes[0].legend(loc='upper right', ncol=N, fontsize='small')
 
@@ -258,7 +259,9 @@ axes[2].set_ylabel(r'$\delta\omega^2/\omega_0^2$')
 axes[2].axhline(0, color='k', lw=0.5)
 
 for i in range(N):
-    axes[3].plot(times, n_sim[i], lw=0.5)
+    axes[3].plot(times, n_sim[i, 0], lw=0.5, label=f'osc {i} x')
+    axes[3].plot(times, n_sim[i, 1], lw=0.5, ls='--', label=f'osc {i} y')
+axes[3].legend(fontsize='small')
 axes[3].set_ylabel(r'$\bar{n}$')
 axes[3].set_xlabel(r'$t$')
 axes[3].set_yscale('log')
@@ -267,12 +270,6 @@ plt.tight_layout()
 plt.savefig(os.path.join(dirname, 'figures/n_particle_combined_trajectory.png'), dpi=150)
 plt.close()
 
-# ============================================================
-# Final Comparison
-# ============================================================
-print("\n" + "=" * 60)
-print(f"Final performance comparison (N={N})")
-print("=" * 60)
 
 n_traj = 128
 n_compare_horizon = 2000
@@ -283,18 +280,6 @@ compare_env = TorchOscillatorEnv(osc_array, batch_size=n_traj, dt=dt,
                                  phase_space_range=np.sqrt(initial_temperature),
                                  device=device)
 compare_env.reset()
-
-# n_bars_history = np.zeros((N, n_traj, n_compare_horizon))
-
-# with torch.no_grad():
-#     for t in range(n_compare_horizon):
-#         # env.n_bar() returns (n_traj, N)
-#         n_bars_history[:, :, t] = compare_env.n_bar().cpu().numpy().T
-#         state = compare_env.state()
-#         u_raw = combined_policy(state)
-#         compare_env.step(u_raw)
-
-# n_final_avg = np.mean(n_bars_history[:, :, -n_compare_horizon // 4:], axis=(1, 2))
 
 n_bars_history = np.zeros((N, 2, n_traj, n_compare_horizon))
 
@@ -312,8 +297,6 @@ n_final_avg = np.mean(n_bars_history[:, :, :, -n_compare_horizon // 4:], axis=(2
 
 lqr = OptimalFeedbackNOscillators(omegas, q=q_cost)
 n_min_theory_cd = lqr.steady_state_nbar(eta, gamma_BA)
-# print(f"Theoretical min (optimal LQR, {N} oscillators): n_min = {n_min_theory_cd:.4f}")
-# print("-" * 60)
 
 # ============================================================
 # Zero-policy baseline
@@ -328,17 +311,6 @@ zero_env = TorchOscillatorEnv(osc_array, batch_size=n_traj, dt=dt,
                               phase_space_range=np.sqrt(initial_temperature),
                               device=device)
 zero_env.reset()
-
-# n_bars_zero = np.zeros((N, n_traj, n_compare_horizon))
-
-# with torch.no_grad():
-#     for t in range(n_compare_horizon):
-#         n_bars_zero[:, :, t] = zero_env.n_bar().cpu().numpy().T
-#         state = zero_env.state()
-#         u_zero = torch.zeros(n_traj, 2, device=device)
-#         zero_env.step(u_zero)
-
-# n_final_zero = np.mean(n_bars_zero[:, :, -n_compare_horizon // 4:], axis=(1, 2))
 
 n_bars_zero = np.zeros((N, 2, n_traj, n_compare_horizon))
 
@@ -357,12 +329,12 @@ for i in range(N):
     print(f"Oscillator {i} (w={omegas[i,0]:.2f},{omegas[i,1]:.2f}):")
     print(f"  x-mode: n_bar (no feedback) = {n_final_zero[i,0]:.4f}")
     print(f"  y-mode: n_bar (no feedback) = {n_final_zero[i,1]:.4f}")
-
-# for i in range(N):
-#     print(f"Oscillator {i} (w={omegas[i,0]:.2f},{omegas[i,1]:.2f}): n_bar (no feedback) = {n_final_zero[i]:.4f}")
-
-# for i in range(N):
-#     print(f"Oscillator {i} (w={omegas[i,0]:.2f},{omegas[i,1]:.2f}): n_bar = {n_final_avg[i]:.4f}, n_min (LQR x-mode) = {n_min_theory_cd[i]:.4f}")
+# ============================================================
+# Final Comparison
+# ============================================================
+print("\n" + "=" * 60)
+print(f"Final performance comparison (N={N})")
+print("=" * 60)
 
 for i in range(N):
     print(f"Oscillator {i} (w={omegas[i,0]:.2f},{omegas[i,1]:.2f}):")
