@@ -1,4 +1,5 @@
 import sys
+import json
 
 
 def parse_overrides(argv=None):
@@ -15,7 +16,9 @@ def parse_overrides(argv=None):
         if '=' not in arg:
             continue
         key, val = arg.split('=', 1)
-        if ',' in val:
+        if val.startswith('['):
+            val = json.loads(val)
+        elif ',' in val:
             val = [float(v) for v in val.split(',')]
         else:
             try:
