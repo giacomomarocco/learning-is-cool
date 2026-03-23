@@ -4,7 +4,7 @@ save_data_on_exit = True
 save_history = True
 save_non_project_files = False
 project_type = 'empty-project-type'
-recent_files = ['src/learn_to_cool/gaussian_oscillator.py', 'scripts/test_parametric.py']
+recent_files = ['src/learn_to_cool/gaussian_oscillator.py', 'scripts/parametric_RL.py', 'src/learn_to_cool/torch_oscillator_env.py', 'scripts/n_oscillator_test.py', 'scripts/n_particle_combined_RL.py', '../non_linear_evolution/dislaced_frame.py', '../non_linear_evolution/test1.py', '../non_linear_evolution/test2.py', '../non_linear_evolution/test3.py']
 
 [main]
 version = 0.2.0

@@ -104,21 +104,26 @@ class TorchOscillatorEnv:
         Vxx, Vpp, _ = self._get_covariances()
         return (self.xc**2 + Vxx + self.pc**2 + Vpp) / 4.0 - 0.5
 
+    def mean_energy(self):
+        """Mean energy: (1/N) sum_a omega_a * (n_bar_a + 1/2)"""
+        n_a = self.n_bar()
+        energy_per_osc = self.omegas * (n_a + 0.5)  # omega_a * (n_a + 1/2)
+        return torch.mean(energy_per_osc, dim=1)
+
     def step(self, raw_action):
         Vxx, Vpp, Cxp = self._get_covariances()
 
         if self.mode != 'combined':
             raw_action = raw_action.view(self.batch_size)
 
-        n_a = self.n_bar()
-        state_cost = torch.mean(self.omegas * (self.xc**2 + self.pc**2), dim=1)
+        state_cost = self.mean_energy()
 
         # Generate noise on the correct device
         dW = torch.randn((self.batch_size, self.N), device=self.device) * np.sqrt(self.dt)
 
         if self.mode == 'cold_damping':
             u = raw_action
-            cost = state_cost + self.cost_u_weight * u**2
+            cost = state_cost + self.cost_u_weight * u**2 / 4
 
             u_expanded = u.unsqueeze(1).expand(-1, self.N)
 
@@ -136,7 +141,7 @@ class TorchOscillatorEnv:
 
         elif self.mode == 'parametric':
             u = self.modulation_depth * torch.tanh(raw_action)
-            cost = state_cost + self.cost_u_weight * u**2
+            cost = state_cost
 
             u_expanded = u.unsqueeze(1).expand(-1, self.N)
             omega_mod = self.omegas * (1.0 + u_expanded)
@@ -166,7 +171,7 @@ class TorchOscillatorEnv:
         elif self.mode == 'combined':
             u_cold = raw_action[:, 0]
             u_param = self.modulation_depth * torch.tanh(raw_action[:, 1])
-            cost = state_cost + self.cost_u_weight * (u_cold**2 + u_param**2)
+            cost = state_cost + self.cost_u_weight * u_cold**2 / 4
 
             u_cold_expanded = u_cold.unsqueeze(1).expand(-1, self.N)
             u_param_expanded = u_param.unsqueeze(1).expand(-1, self.N)

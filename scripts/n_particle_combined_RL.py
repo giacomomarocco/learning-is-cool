@@ -29,10 +29,10 @@ initial_temperature = 10
 gamma_BA = 18.8 / 104
 eta = 0.2
 dt = 0.05
-horizon = 300
-batch_size = 1024
+horizon = 400
+batch_size = 8192
 modulation_depth = 0.5  # max fractional change in omega^2
-g_fb = 0.8
+g_fb = 1.0
 q_cost = (g_fb)**(-2)
 n_iterations = 500
 
@@ -53,6 +53,8 @@ modulation_depth = overrides.get('modulation_depth', modulation_depth)
 g_fb = overrides.get('g_fb', g_fb)
 n_iterations = overrides.get('n_iterations', n_iterations)
 omegas = overrides.get('omegas', omegas)
+if isinstance(omegas, (int, float)):
+    omegas = [omegas]
 q_cost = (g_fb)**(-2)
 N = len(omegas)
 if overrides:
@@ -80,6 +82,8 @@ def torch_rollout_env(policy, env, horizon):
 def train_policy(policy, env, n_iterations=1500, lr=0.0005, eval_every=50):
     optimizer = torch.optim.Adam(policy.parameters(), lr=lr)
     history = []
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, patience=50)
+    current_lr = lr
 
     t_start = time.perf_counter()
 
@@ -92,6 +96,11 @@ def train_policy(policy, env, n_iterations=1500, lr=0.0005, eval_every=50):
         cost.backward()
         torch.nn.utils.clip_grad_norm_(policy.parameters(), max_norm=1.0)
         optimizer.step()
+        scheduler.step(cost.item())  # then adjust the learning rate
+        
+        if (lr_ := optimizer.param_groups[0]['lr']) != current_lr:
+            print(f"  ** LR: {current_lr:.6f} -> {lr_:.6f}")
+            current_lr = lr_
 
         if iteration % eval_every == 0:
             with torch.no_grad():
@@ -130,7 +139,7 @@ train_env = TorchOscillatorEnv(osc_array, batch_size=batch_size, dt=dt,
 history_combined = train_policy(
     combined_policy,
     train_env,
-    n_iterations=500,
+    n_iterations=n_iterations,
     lr=0.0005
 )
 
@@ -213,7 +222,7 @@ times, x_sim, p_sim, u_c_sim, u_p_sim, n_sim = simulate_n_particle_trajectory(
 fig, axes = plt.subplots(4, 1, figsize=(10, 10), sharex=True)
 
 for i in range(N):
-    axes[0].plot(times, x_sim[i], lw=0.5, label=f"$\omega_{i}={omegas[i]:.2f}$")
+    axes[0].plot(times, x_sim[i], lw=0.5, label=fr"$\omega_{i}={omegas[i]:.2f}$")
 axes[0].set_ylabel(r'$\langle x \rangle_c$')
 axes[0].set_title(f'N={N} Combined feedback trajectory')
 axes[0].legend(loc='upper right', ncol=N, fontsize='small')
@@ -266,10 +275,39 @@ with torch.no_grad():
 n_final_avg = np.mean(n_bars_history[:, :, -n_compare_horizon // 4:], axis=(1, 2))
 
 lqr = OptimalFeedbackNOscillators(np.array(omegas), q=q_cost)
-n_min_theory_cd = lqr.mean_nbar(eta, gamma_BA)
-print(f"Theoretical min (optimal LQR, {N} oscillators): n_min = {n_min_theory_cd:.4f}")
-print("-" * 60)
+n_min_theory_cd = lqr.steady_state_nbar(eta, gamma_BA)
+# print(f"Theoretical min (optimal LQR, {N} oscillators): n_min = {n_min_theory_cd:.4f}")
+# print("-" * 60)
+
+# ============================================================
+# Zero-policy baseline
+# ============================================================
+print("\n" + "=" * 60)
+print("Zero-policy baseline (no feedback)")
+print("=" * 60)
+
+zero_env = TorchOscillatorEnv(osc_array, batch_size=n_traj, dt=dt,
+                              mode='combined', horizon=n_compare_horizon,
+                              modulation_depth=modulation_depth,
+                              phase_space_range=np.sqrt(initial_temperature),
+                              device=device)
+zero_env.reset()
+
+n_bars_zero = np.zeros((N, n_traj, n_compare_horizon))
+
+with torch.no_grad():
+    for t in range(n_compare_horizon):
+        n_bars_zero[:, :, t] = zero_env.n_bar().cpu().numpy().T
+        state = zero_env.state()
+        u_zero = torch.zeros(n_traj, 2, device=device)
+        zero_env.step(u_zero)
+
+n_final_zero = np.mean(n_bars_zero[:, :, -n_compare_horizon // 4:], axis=(1, 2))
+
 for i in range(N):
-    print(f"Oscillator {i} (w={omegas[i]:.2f}): n_bar = {n_final_avg[i]:.4f}")
+    print(f"Oscillator {i} (w={omegas[i]:.2f}): n_bar (no feedback) = {n_final_zero[i]:.4f}")
+
+for i in range(N):
+    print(f"Oscillator {i} (w={omegas[i]:.2f}): n_bar = {n_final_avg[i]:.4f}, n_min (LQR) = {n_min_theory_cd[i]:.4f}")
 print("-" * 60)
 print(f"Average n_bar across all oscillators: {np.mean(n_final_avg):.4f}")

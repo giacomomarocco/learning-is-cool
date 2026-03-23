@@ -81,7 +81,7 @@ class OptimalFeedbackNOscillators:
     #     return self.q * np.eye(2 * self.N)
     def _build_Q(self):
         """Control cost scalar q"""
-        return np.array([[self.q]]) 
+        return np.array([[self.q/4]])
 
     def _solve_care(self):
         """
