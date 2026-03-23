@@ -24,13 +24,18 @@ class OptimalFeedbackNOscillators:
         """
         Parameters
         ----------
-        omegas : array-like
-            Frequencies of the N oscillators.
+        omegas : array-like, shape (N, 2)
+            Frequencies [omega_x, omega_y] per oscillator.
+            LQR uses x-mode frequencies (column 0) only.
         q : float
             Control cost parameter (higher = more expensive control).
         """
-        self.omegas = np.asarray(omegas, dtype=float)
-        self.N = len(self.omegas)
+        omegas = np.asarray(omegas, dtype=float)
+        if omegas.ndim == 1:
+            omegas = omegas[:, np.newaxis] * np.ones(2)  # broadcast to (N, 2)
+        self.omegas_full = omegas          # (N, 2)
+        self.omegas = omegas[:, 0]         # x-mode freqs for LQR
+        self.N = omegas.shape[0]
         self.q = q
 
         self.A_full = self._build_A()

@@ -10,7 +10,7 @@ import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src', 'learn_to_cool'))
 
-from n_oscillators import GaussianOscillatorArray
+from gaussian_oscillator_array import GaussianOscillatorArray
 from optimal_feedback_n_oscillators import OptimalFeedbackNOscillators
 from torch_oscillator_env import TorchOscillatorEnv
 import numpy as np
@@ -36,8 +36,8 @@ g_fb = 1.0
 q_cost = (g_fb)**(-2)
 n_iterations = 500
 
-# Array of N particles with different frequencies
-omegas = [1.0, 1.05, 1.1]
+# Array of N particles with different frequencies — [omega_x, omega_y] per oscillator
+omegas = [[1.0, 1.01], [1.05, 1.06], [1.1, 1.11]]
 
 # CLI overrides
 from cli_utils import parse_overrides
@@ -53,8 +53,9 @@ modulation_depth = overrides.get('modulation_depth', modulation_depth)
 g_fb = overrides.get('g_fb', g_fb)
 n_iterations = overrides.get('n_iterations', n_iterations)
 omegas = overrides.get('omegas', omegas)
-if isinstance(omegas, (int, float)):
-    omegas = [omegas]
+omegas = np.asarray(omegas)
+if omegas.ndim == 1:
+    omegas = np.column_stack([omegas, omegas * 1.01])
 q_cost = (g_fb)**(-2)
 N = len(omegas)
 if overrides:
@@ -115,14 +116,14 @@ def train_policy(policy, env, n_iterations=1500, lr=0.0005, eval_every=50):
     print(f"\nTraining completed in {t_total:.1f}s")
     return history
 
-# --- N-particle policy (2N inputs, 2 outputs) ---
+# --- N-particle policy (4N inputs, 2 outputs) ---
 print("=" * 60)
-print(f"Training shared combined feedback policy (2*{N} inputs -> 2 outputs)")
+print(f"Training shared combined feedback policy (4*{N} inputs -> 2 outputs)")
 print("=" * 60)
 
-# Input dimension is 2*N (all xc and all pc)
+# Input dimension is 4*N (xc and pc for both modes of each oscillator)
 combined_policy = nn.Sequential(
-    nn.Linear(2 * N, 128),
+    nn.Linear(4 * N, 128),
     nn.Tanh(),
     nn.Linear(128, 128),
     nn.Tanh(),
@@ -130,7 +131,7 @@ combined_policy = nn.Sequential(
 ).to(device)
 
 train_env = TorchOscillatorEnv(osc_array, batch_size=batch_size, dt=dt,
-                               mode='combined', horizon=horizon,
+                               horizon=horizon,
                                modulation_depth=modulation_depth,
                                cost_u_weight=q_cost,
                                phase_space_range=np.sqrt(initial_temperature),
@@ -185,10 +186,10 @@ def simulate_n_particle_trajectory(policy, env, horizon_sim):
 
     with torch.no_grad():
         for t in range(horizon_sim):
-            # env.xc is (1, N)
+            # env.xc is (1, N, 2) — record x-mode
             for i in range(N):
-                x_history[i].append(env.xc[0, i].item())
-                p_history[i].append(env.pc[0, i].item())
+                x_history[i].append(env.xc[0, i, 0].item())
+                p_history[i].append(env.pc[0, i, 0].item())
 
             times.append(t * env.dt)
 
@@ -210,7 +211,7 @@ def simulate_n_particle_trajectory(policy, env, horizon_sim):
 
 sim_horizon = 2000
 eval_env = TorchOscillatorEnv(osc_array, batch_size=1, dt=dt,
-                               mode='combined', horizon=sim_horizon,
+                               horizon=sim_horizon,
                                modulation_depth=modulation_depth,
                                phase_space_range=np.sqrt(initial_temperature),
                                device=device)
@@ -222,7 +223,7 @@ times, x_sim, p_sim, u_c_sim, u_p_sim, n_sim = simulate_n_particle_trajectory(
 fig, axes = plt.subplots(4, 1, figsize=(10, 10), sharex=True)
 
 for i in range(N):
-    axes[0].plot(times, x_sim[i], lw=0.5, label=fr"$\omega_{i}={omegas[i]:.2f}$")
+    axes[0].plot(times, x_sim[i], lw=0.5, label=fr"$\omega_{i}={omegas[i,0]:.2f}$")
 axes[0].set_ylabel(r'$\langle x \rangle_c$')
 axes[0].set_title(f'N={N} Combined feedback trajectory')
 axes[0].legend(loc='upper right', ncol=N, fontsize='small')
@@ -256,7 +257,7 @@ n_traj = 128
 n_compare_horizon = 2000
 
 compare_env = TorchOscillatorEnv(osc_array, batch_size=n_traj, dt=dt,
-                                 mode='combined', horizon=n_compare_horizon,
+                                 horizon=n_compare_horizon,
                                  modulation_depth=modulation_depth,
                                  phase_space_range=np.sqrt(initial_temperature),
                                  device=device)
@@ -274,7 +275,7 @@ with torch.no_grad():
 
 n_final_avg = np.mean(n_bars_history[:, :, -n_compare_horizon // 4:], axis=(1, 2))
 
-lqr = OptimalFeedbackNOscillators(np.array(omegas), q=q_cost)
+lqr = OptimalFeedbackNOscillators(omegas, q=q_cost)
 n_min_theory_cd = lqr.steady_state_nbar(eta, gamma_BA)
 # print(f"Theoretical min (optimal LQR, {N} oscillators): n_min = {n_min_theory_cd:.4f}")
 # print("-" * 60)
@@ -287,7 +288,7 @@ print("Zero-policy baseline (no feedback)")
 print("=" * 60)
 
 zero_env = TorchOscillatorEnv(osc_array, batch_size=n_traj, dt=dt,
-                              mode='combined', horizon=n_compare_horizon,
+                              horizon=n_compare_horizon,
                               modulation_depth=modulation_depth,
                               phase_space_range=np.sqrt(initial_temperature),
                               device=device)
@@ -305,9 +306,9 @@ with torch.no_grad():
 n_final_zero = np.mean(n_bars_zero[:, :, -n_compare_horizon // 4:], axis=(1, 2))
 
 for i in range(N):
-    print(f"Oscillator {i} (w={omegas[i]:.2f}): n_bar (no feedback) = {n_final_zero[i]:.4f}")
+    print(f"Oscillator {i} (w={omegas[i,0]:.2f},{omegas[i,1]:.2f}): n_bar (no feedback) = {n_final_zero[i]:.4f}")
 
 for i in range(N):
-    print(f"Oscillator {i} (w={omegas[i]:.2f}): n_bar = {n_final_avg[i]:.4f}, n_min (LQR) = {n_min_theory_cd[i]:.4f}")
+    print(f"Oscillator {i} (w={omegas[i,0]:.2f},{omegas[i,1]:.2f}): n_bar = {n_final_avg[i]:.4f}, n_min (LQR x-mode) = {n_min_theory_cd[i]:.4f}")
 print("-" * 60)
 print(f"Average n_bar across all oscillators: {np.mean(n_final_avg):.4f}")

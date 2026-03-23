@@ -26,7 +26,7 @@ and plot all conditional mean positions on one figure.
 
 import numpy as np
 import matplotlib.pyplot as plt
-from n_oscillators import GaussianOscillatorArray
+from gaussian_oscillator_array import GaussianOscillatorArray
 from optimal_feedback_n_oscillators import OptimalFeedbackNOscillators
 import seaborn as sns
 
