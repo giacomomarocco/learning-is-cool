@@ -337,3 +337,54 @@ class OptimalFeedbackNOscillators:
         Mean phonon number averaged over all oscillators.
         """
         return np.mean(self.steady_state_nbar(eta, Gamma_BA))
+
+
+class GridFeedbackLQR:
+    """
+    LQR feedback for a 2D NxN grid of 3D oscillators.
+
+    Creates N row-LQR solvers (for x cold damping) and N column-LQR
+    solvers (for y cold damping). z-modes receive no cold damping.
+    """
+
+    def __init__(self, omegas, q=1.0):
+        """
+        Parameters
+        ----------
+        omegas : array-like, shape (N, N, 3)
+            Angular frequencies [omega_x, omega_y, omega_z] per site.
+        q : float
+            Control cost parameter.
+        """
+        omegas = np.asarray(omegas, dtype=float)
+        N = omegas.shape[0]
+        self.N = N
+
+        # Row A x-solver: N oscillators with x-frequencies omegas[A, :, 0]
+        self.row_solvers = [
+            OptimalFeedbackNOscillators(omegas[A, :, 0], q=q)
+            for A in range(N)
+        ]
+        # Column B y-solver: N oscillators with y-frequencies omegas[:, B, 1]
+        self.col_solvers = [
+            OptimalFeedbackNOscillators(omegas[:, B, 1], q=q)
+            for B in range(N)
+        ]
+        self._row_fns = [s.common_force_fn() for s in self.row_solvers]
+        self._col_fns = [s.common_force_fn() for s in self.col_solvers]
+
+    def cold_damping_fn(self):
+        """Return fn(xc, pc) -> (u_cd_x, u_cd_y)."""
+        row_fns, col_fns = self._row_fns, self._col_fns
+        N = self.N
+
+        def fn(xc, pc):
+            u_cd_x = np.array([
+                row_fns[A](xc[A, :, 0], pc[A, :, 0]) for A in range(N)
+            ])
+            u_cd_y = np.array([
+                col_fns[B](xc[:, B, 1], pc[:, B, 1]) for B in range(N)
+            ])
+            return u_cd_x, u_cd_y
+
+        return fn

@@ -1,6 +1,8 @@
 # General purpose
 You are a scientist working on precision simulations of quantum dynamics.
 You are working on feedback cooling of an array of neutral nanoparticles.
+It is crucial to be careful and consistent, e.g, about using the same conventions throughout.
+You should write markdown notes in the 'notes' directory tracking the project structure; major tasks should have their own markdown file, with the results or implementations written down therein.
 
 # Python Package Management with uv
 Use uv exclusively for Python package management in this project.

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Scale Combined RL Cooling to N Particles (Shared Control).
-Trains an RL agent to cool an array of N particles using a shared pair
-of control signals (u_cold, u_param).
+Scale Combined RL Cooling to NxN Grid of 3D Oscillators.
+Trains an RL agent to cool a 2D array of particles using
+row/column cold damping and parametric modulation.
 """
 
 import sys
@@ -11,7 +11,7 @@ import os
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src', 'learn_to_cool'))
 
 from gaussian_oscillator_array import GaussianOscillatorArray
-from optimal_feedback_n_oscillators import OptimalFeedbackNOscillators
+from optimal_feedback_n_oscillators import OptimalFeedbackNOscillators, GridFeedbackLQR
 from torch_oscillator_env import TorchOscillatorEnv
 import numpy as np
 import matplotlib.pyplot as plt
@@ -36,8 +36,18 @@ g_fb = 1.0
 q_cost = (g_fb)**(-2)
 n_iterations = 500
 
-# Array of N particles with different frequencies — [omega_x, omega_y] per oscillator
-omegas = [[1.0, 1.01], [1.05, 1.06], [1.1, 1.11]]
+# 2D NxN grid — [omega_x, omega_y, omega_z] per site
+# Example: 2x2 grid
+N_grid = 2
+base_x = np.linspace(1.0, 1.1, N_grid)
+base_y = np.linspace(1.01, 1.11, N_grid)
+base_z = np.linspace(1.02, 1.12, N_grid)
+omegas = np.zeros((N_grid, N_grid, 3))
+for a in range(N_grid):
+    for b in range(N_grid):
+        omegas[a, b, 0] = base_x[a] + 0.01 * b  # omega_x
+        omegas[a, b, 1] = base_y[a] + 0.01 * b  # omega_y
+        omegas[a, b, 2] = base_z[a] + 0.01 * b  # omega_z
 
 # CLI overrides
 from cli_utils import parse_overrides
@@ -55,15 +65,37 @@ n_iterations = overrides.get('n_iterations', n_iterations)
 omegas = overrides.get('omegas', omegas)
 omegas = np.asarray(omegas)
 if omegas.ndim == 1:
-    omegas = np.column_stack([omegas, omegas * 1.01])
+    # Single list of frequencies — build NxN grid with slight offsets
+    N_grid = int(np.sqrt(len(omegas)))
+    omegas_3d = np.zeros((N_grid, N_grid, 3))
+    for a in range(N_grid):
+        for b in range(N_grid):
+            w = omegas[a * N_grid + b]
+            omegas_3d[a, b] = [w, w * 1.01, w * 1.02]
+    omegas = omegas_3d
+elif omegas.ndim == 2:
+    # (N, 3) — reshape to (sqrt(N), sqrt(N), 3) or (N, 1, 3)
+    N_lin = omegas.shape[0]
+    N_grid = int(np.sqrt(N_lin))
+    if N_grid * N_grid == N_lin and omegas.shape[1] == 3:
+        omegas = omegas.reshape(N_grid, N_grid, 3)
+    else:
+        # (N, 2) old format — expand to (N, 1, 3) with z = mean(x,y)
+        omegas_3d = np.zeros((N_lin, 1, 3))
+        omegas_3d[:, 0, 0] = omegas[:, 0]
+        omegas_3d[:, 0, 1] = omegas[:, 1] if omegas.shape[1] > 1 else omegas[:, 0] * 1.01
+        omegas_3d[:, 0, 2] = np.mean(omegas, axis=1) * 1.02
+        omegas = omegas_3d
 q_cost = (g_fb)**(-2)
-N = len(omegas)
+N_grid = omegas.shape[0]
+N = N_grid  # grid size
 if overrides:
     print(f"CLI overrides: {overrides}")
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
-print(f"Cooling {N} oscillators with frequencies: {omegas}")
+print(f"Cooling {N}x{N} grid ({N*N} oscillators, 3 modes each)")
+print(f"Frequencies shape: {omegas.shape}")
 
 osc_array = GaussianOscillatorArray(omegas=omegas, n_thermal=n_th, gamma_meas=gamma_BA, eta=eta)
 
@@ -72,7 +104,7 @@ def torch_rollout_env(policy, env, horizon):
     total_cost = 0.0
     for _ in range(horizon):
         state = env.state()
-        u = policy(state) # (batch_size, 2)
+        u = policy(state)  # (batch_size, 4N)
         cost = env.step(u)
         total_cost += cost
     return total_cost.mean()
@@ -87,18 +119,27 @@ def train_policy(policy, env, n_iterations=1500, lr=0.0005, eval_every=50):
     current_lr = lr
 
     t_start = time.perf_counter()
+    t_forward_total = 0.0
+    t_backward_total = 0.0
 
     for iteration in range(n_iterations):
         # Forward pass
+        t_fwd0 = time.perf_counter()
         cost = torch_rollout_env(policy, env, horizon=horizon)
+        t_fwd1 = time.perf_counter()
 
         # Backward pass
         optimizer.zero_grad()
         cost.backward()
         torch.nn.utils.clip_grad_norm_(policy.parameters(), max_norm=1.0)
         optimizer.step()
+        t_bwd1 = time.perf_counter()
+
+        t_forward_total += t_fwd1 - t_fwd0
+        t_backward_total += t_bwd1 - t_fwd1
+
         scheduler.step(cost.item())  # then adjust the learning rate
-        
+
         if (lr_ := optimizer.param_groups[0]['lr']) != current_lr:
             print(f"  ** LR: {current_lr:.6f} -> {lr_:.6f}")
             current_lr = lr_
@@ -110,24 +151,32 @@ def train_policy(policy, env, n_iterations=1500, lr=0.0005, eval_every=50):
                     for _ in range(5)
                 ) / 5
             history.append((iteration, avg))
-            print(f"  Iter {iteration:4d}, avg cost: {avg:.2f}")
+            elapsed = time.perf_counter() - t_start
+            per_iter = elapsed / (iteration + 1)
+            print(f"  Iter {iteration:4d}, avg cost: {avg:.2f}  "
+                  f"[{elapsed:.0f}s elapsed, {per_iter:.2f}s/iter]")
 
     t_total = time.perf_counter() - t_start
-    print(f"\nTraining completed in {t_total:.1f}s")
+    avg_fwd = t_forward_total / n_iterations
+    avg_bwd = t_backward_total / n_iterations
+    print(f"\nTraining completed in {t_total:.1f}s ({t_total/n_iterations:.2f}s/iter)")
+    print(f"  Forward rollout: {avg_fwd:.2f}s/iter ({100*t_forward_total/t_total:.0f}%)")
+    print(f"  Backward + optim: {avg_bwd:.2f}s/iter ({100*t_backward_total/t_total:.0f}%)")
     return history
 
-# --- N-particle policy (4N inputs, 2 outputs) ---
+# --- Grid policy: 6N^2 inputs, 4N outputs ---
+input_dim = 6 * N * N
+output_dim = 4 * N
 print("=" * 60)
-print(f"Training shared combined feedback policy (4*{N} inputs -> 2 outputs)")
+print(f"Training grid feedback policy ({input_dim} inputs -> {output_dim} outputs)")
 print("=" * 60)
 
-# Input dimension is 4*N (xc and pc for both modes of each oscillator)
 combined_policy = nn.Sequential(
-    nn.Linear(4 * N, 128),
+    nn.Linear(input_dim, 128),
     nn.Tanh(),
     nn.Linear(128, 128),
     nn.Tanh(),
-    nn.Linear(128, 2)
+    nn.Linear(128, output_dim)
 ).to(device)
 
 train_env = TorchOscillatorEnv(osc_array, batch_size=batch_size, dt=dt,
@@ -158,10 +207,10 @@ print(f"\nSaved weights to {os.path.join(weights_dir, 'n_particle_combined_rl.pt
 # ============================================================
 fig, ax = plt.subplots(figsize=(8, 5))
 iters, costs = zip(*history_combined)
-ax.plot(iters, costs, label=f"N={N} Combined RL")
+ax.plot(iters, costs, label=f"{N}x{N} Grid Combined RL")
 ax.set_xlabel("Iteration")
 ax.set_ylabel("Average cost")
-ax.set_title(f"Learning curve ({N} particles)")
+ax.set_title(f"Learning curve ({N}x{N} grid, {N*N} oscillators)")
 ax.legend()
 ax.set_yscale('log')
 plt.tight_layout()
@@ -172,61 +221,49 @@ plt.close()
 # ============================================================
 # Simulate and compare trajectories
 # ============================================================
-def simulate_n_particle_trajectory(policy, env, horizon_sim):
+def simulate_grid_trajectory(policy, env, horizon_sim):
     state = env.reset()
 
-    # Store histories for each oscillator: list of length N
     x_history = []
     p_history = []
     n_history = []
-    u_cold_history = []
-    u_param_history = []
+    u_cd_x_history = []
+    u_cd_y_history = []
+    u_param_x_history = []
+    u_param_y_history = []
     times = []
 
     with torch.no_grad():
-        for t in range(horizon_sim):
-            # env.xc is (1, N, 2) — record x-mode
-            # for i in range(N):
-            #     x_history[i].append(env.xc[0, i, 0].item())
-            #     p_history[i].append(env.pc[0, i, 0].item())
+        for t_step in range(horizon_sim):
+            x_history.append(env.xc[0].cpu().numpy().copy())   # (N, N, 3)
+            p_history.append(env.pc[0].cpu().numpy().copy())
+            times.append(t_step * env.dt)
 
-            # times.append(t * env.dt)
-
-            # n_bars = env.n_bar() # (1, N)
-            # for i in range(N):
-            #     n_history[i].append(n_bars[0, i].item())
-
-            # u_raw = policy(state) # (1, 2)
-            # u_cold = u_raw[0, 0]
-            # u_param = env.modulation_depth * torch.tanh(u_raw[0, 1])
-            # u_cold_history.append(u_cold.item())
-            # u_param_history.append(u_param.item())
-
-            # env.step(u_raw)
-            # state = env.state()
-            x_history.append(env.xc[0].cpu().numpy().copy())   # (N, 2)
-            p_history.append(env.pc[0].cpu().numpy().copy())   # (N, 2)
-            times.append(t * env.dt)
-            
-            # Per-mode n_bar: (1, N, 2)
+            # Per-mode n_bar: (1, N, N, 3)
             n_per_mode = (env.xc**2 + env.Vxx + env.pc**2 + env.Vpp) / 4.0 - 0.5
-            n_history.append(n_per_mode[0].cpu().numpy().copy())  # (N, 2)
-            
-            u_raw = policy(state)
-            u_cold = u_raw[0, 0]
-            u_param = env.modulation_depth * torch.tanh(u_raw[0, 1])
-            u_cold_history.append(u_cold.item())
-            u_param_history.append(u_param.item())
-            
+            n_history.append(n_per_mode[0].cpu().numpy().copy())  # (N, N, 3)
+
+            u_raw = policy(state)  # (1, 4N)
+            u_cd_x = u_raw[0, :N]
+            u_cd_y = u_raw[0, N:2*N]
+            u_param_x = env.modulation_depth * torch.tanh(u_raw[0, 2*N:3*N])
+            u_param_y = env.modulation_depth * torch.tanh(u_raw[0, 3*N:])
+            u_cd_x_history.append(u_cd_x.cpu().numpy().copy())
+            u_cd_y_history.append(u_cd_y.cpu().numpy().copy())
+            u_param_x_history.append(u_param_x.cpu().numpy().copy())
+            u_param_y_history.append(u_param_y.cpu().numpy().copy())
+
             env.step(u_raw)
             state = env.state()
 
-        # Stack: (horizon, N, 2) -> transpose to (N, 2, horizon)
-        x_hist = np.array(x_history).transpose(1, 2, 0)
-        p_hist = np.array(p_history).transpose(1, 2, 0)
-        n_hist = np.array(n_history).transpose(1, 2, 0)
+    # x_history: list of (N, N, 3) -> stack to (horizon, N, N, 3)
+    x_hist = np.array(x_history)
+    p_hist = np.array(p_history)
+    n_hist = np.array(n_history)
     return (np.array(times), x_hist, p_hist,
-            np.array(u_cold_history), np.array(u_param_history), n_hist)
+            np.array(u_cd_x_history), np.array(u_cd_y_history),
+            np.array(u_param_x_history), np.array(u_param_y_history),
+            n_hist)
 
 
 sim_horizon = 2000
@@ -236,32 +273,49 @@ eval_env = TorchOscillatorEnv(osc_array, batch_size=1, dt=dt,
                                phase_space_range=np.sqrt(initial_temperature),
                                device=device)
 
-times, x_sim, p_sim, u_c_sim, u_p_sim, n_sim = simulate_n_particle_trajectory(
+times, x_sim, p_sim, u_cx, u_cy, u_px, u_py, n_sim = simulate_grid_trajectory(
     combined_policy, eval_env, sim_horizon
 )
 
-fig, axes = plt.subplots(4, 1, figsize=(10, 10), sharex=True)
+# Plot: one row per grid site, showing all 3 modes
+n_sites = N * N
+fig, axes = plt.subplots(4, 1, figsize=(12, 12), sharex=True)
 
-for i in range(N):
-    axes[0].plot(times, x_sim[i, 0], lw=0.5, label=fr"$\omega_{{x,{i}}}={omegas[i,0]:.2f}$")
-    axes[0].plot(times, x_sim[i, 1], lw=0.5, ls='--', label=fr"$\omega_{{y,{i}}}={omegas[i,1]:.2f}$")
-    axes[0].set_ylabel(r'$\langle x \rangle_c$')
-    
-axes[0].set_title(f'N={N} Combined feedback trajectory')
-axes[0].legend(loc='upper right', ncol=N, fontsize='small')
+# Panel 0: conditional means (x-mode of each site)
+for a in range(N):
+    for b in range(N):
+        for m, mode_name in enumerate(['x', 'y', 'z']):
+            ls = ['-', '--', ':'][m]
+            axes[0].plot(times, x_sim[:, a, b, m], lw=0.5, ls=ls,
+                        label=f'({a},{b}) {mode_name}' if m == 0 else None)
+axes[0].set_ylabel(r'$\langle x \rangle_c$')
+axes[0].set_title(f'{N}x{N} Grid combined feedback trajectory')
+axes[0].legend(loc='upper right', ncol=N*N, fontsize='x-small')
 
-axes[1].plot(times, u_c_sim, lw=0.5, color='C3')
-axes[1].set_ylabel(r'$u_{cold}$')
+# Panel 1: cold damping forces
+for a in range(N):
+    axes[1].plot(times, u_cx[:, a], lw=0.5, label=f'u_cd_x row {a}')
+    axes[1].plot(times, u_cy[:, a], lw=0.5, ls='--', label=f'u_cd_y col {a}')
+axes[1].set_ylabel(r'$u_{cd}$')
 axes[1].axhline(0, color='k', lw=0.5)
+axes[1].legend(fontsize='x-small')
 
-axes[2].plot(times, u_p_sim, lw=0.5, color='C4')
+# Panel 2: parametric modulation
+for a in range(N):
+    axes[2].plot(times, u_px[:, a], lw=0.5, label=f'u_p_x row {a}')
+    axes[2].plot(times, u_py[:, a], lw=0.5, ls='--', label=f'u_p_y col {a}')
 axes[2].set_ylabel(r'$\delta\omega^2/\omega_0^2$')
 axes[2].axhline(0, color='k', lw=0.5)
+axes[2].legend(fontsize='x-small')
 
-for i in range(N):
-    axes[3].plot(times, n_sim[i, 0], lw=0.5, label=f'osc {i} x')
-    axes[3].plot(times, n_sim[i, 1], lw=0.5, ls='--', label=f'osc {i} y')
-axes[3].legend(fontsize='small')
+# Panel 3: phonon numbers per site per mode
+for a in range(N):
+    for b in range(N):
+        for m, mode_name in enumerate(['x', 'y', 'z']):
+            ls = ['-', '--', ':'][m]
+            axes[3].plot(times, n_sim[:, a, b, m], lw=0.5, ls=ls,
+                        label=f'({a},{b}) {mode_name}')
+axes[3].legend(fontsize='x-small', ncol=3)
 axes[3].set_ylabel(r'$\bar{n}$')
 axes[3].set_xlabel(r'$t$')
 axes[3].set_yscale('log')
@@ -281,22 +335,23 @@ compare_env = TorchOscillatorEnv(osc_array, batch_size=n_traj, dt=dt,
                                  device=device)
 compare_env.reset()
 
-n_bars_history = np.zeros((N, 2, n_traj, n_compare_horizon))
+# n_bars: (N, N, 3, n_traj, n_compare_horizon)
+n_bars_history = np.zeros((N, N, 3, n_traj, n_compare_horizon))
 
 with torch.no_grad():
     for t in range(n_compare_horizon):
         n_per_mode = (compare_env.xc**2 + compare_env.Vxx
-                      + compare_env.pc**2 + compare_env.Vpp) / 4.0 - 0.5  # (n_traj, N, 2)
-        n_bars_history[:, :, :, t] = n_per_mode.cpu().numpy().transpose(1, 2, 0)
+                      + compare_env.pc**2 + compare_env.Vpp) / 4.0 - 0.5  # (n_traj, N, N, 3)
+        n_bars_history[:, :, :, :, t] = n_per_mode.cpu().numpy().transpose(1, 2, 3, 0)
         state = compare_env.state()
         u_raw = combined_policy(state)
         compare_env.step(u_raw)
 
-n_final_avg = np.mean(n_bars_history[:, :, :, -n_compare_horizon // 4:], axis=(2, 3))  # (N, 2)
+# Average over trajectories and last quarter: (N, N, 3)
+n_final_avg = np.mean(n_bars_history[:, :, :, :, -n_compare_horizon // 4:], axis=(3, 4))
 
-
-lqr = OptimalFeedbackNOscillators(omegas, q=q_cost)
-n_min_theory_cd = lqr.steady_state_nbar(eta, gamma_BA)
+# LQR comparison for x-mode rows
+lqr_grid = GridFeedbackLQR(omegas, q=q_cost)
 
 # ============================================================
 # Zero-policy baseline
@@ -312,36 +367,40 @@ zero_env = TorchOscillatorEnv(osc_array, batch_size=n_traj, dt=dt,
                               device=device)
 zero_env.reset()
 
-n_bars_zero = np.zeros((N, 2, n_traj, n_compare_horizon))
+n_bars_zero = np.zeros((N, N, 3, n_traj, n_compare_horizon))
 
 with torch.no_grad():
     for t in range(n_compare_horizon):
         n_per_mode = (zero_env.xc**2 + zero_env.Vxx
                       + zero_env.pc**2 + zero_env.Vpp) / 4.0 - 0.5
-        n_bars_zero[:, :, :, t] = n_per_mode.cpu().numpy().transpose(1, 2, 0)
+        n_bars_zero[:, :, :, :, t] = n_per_mode.cpu().numpy().transpose(1, 2, 3, 0)
         state = zero_env.state()
-        u_zero = torch.zeros(n_traj, 2, device=device)
+        u_zero = torch.zeros(n_traj, 4 * N, device=device)
         zero_env.step(u_zero)
 
-n_final_zero = np.mean(n_bars_zero[:, :, :, -n_compare_horizon // 4:], axis=(2, 3))  # (N, 2)
+n_final_zero = np.mean(n_bars_zero[:, :, :, :, -n_compare_horizon // 4:], axis=(3, 4))  # (N, N, 3)
 
-for i in range(N):
-    print(f"Oscillator {i} (w={omegas[i,0]:.2f},{omegas[i,1]:.2f}):")
-    print(f"  x-mode: n_bar (no feedback) = {n_final_zero[i,0]:.4f}")
-    print(f"  y-mode: n_bar (no feedback) = {n_final_zero[i,1]:.4f}")
+for a in range(N):
+    for b in range(N):
+        print(f"Site ({a},{b}) (wx={omegas[a,b,0]:.3f}, wy={omegas[a,b,1]:.3f}, wz={omegas[a,b,2]:.3f}):")
+        for m, mode_name in enumerate(['x', 'y', 'z']):
+            print(f"  {mode_name}-mode: n_bar (no feedback) = {n_final_zero[a,b,m]:.4f}")
+
 # ============================================================
 # Final Comparison
 # ============================================================
 print("\n" + "=" * 60)
-print(f"Final performance comparison (N={N})")
+print(f"Final performance comparison ({N}x{N} grid)")
 print("=" * 60)
 
-for i in range(N):
-    print(f"Oscillator {i} (w={omegas[i,0]:.2f},{omegas[i,1]:.2f}):")
-    print(f"  x-mode: n_bar = {n_final_avg[i,0]:.4f}, n_min (LQR) = {n_min_theory_cd[i]:.4f}")
-    print(f"  y-mode: n_bar = {n_final_avg[i,1]:.4f}  (no direct feedback)")
-    
+for a in range(N):
+    for b in range(N):
+        print(f"Site ({a},{b}) (wx={omegas[a,b,0]:.3f}, wy={omegas[a,b,1]:.3f}, wz={omegas[a,b,2]:.3f}):")
+        for m, mode_name in enumerate(['x', 'y', 'z']):
+            print(f"  {mode_name}-mode: n_bar = {n_final_avg[a,b,m]:.4f}")
+
 print("-" * 60)
-print(f"Average n_bar (x-mode): {np.mean(n_final_avg[:, 0]):.4f}")
-print(f"Average n_bar (y-mode): {np.mean(n_final_avg[:, 1]):.4f}")
+print(f"Average n_bar (x-mode): {np.mean(n_final_avg[:, :, 0]):.4f}")
+print(f"Average n_bar (y-mode): {np.mean(n_final_avg[:, :, 1]):.4f}")
+print(f"Average n_bar (z-mode): {np.mean(n_final_avg[:, :, 2]):.4f}")
 print(f"Average n_bar (overall): {np.mean(n_final_avg):.4f}")
