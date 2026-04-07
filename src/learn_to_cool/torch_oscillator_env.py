@@ -52,6 +52,17 @@ class TorchOscillatorEnv:
         self.B_x = omegas_x * torch.sqrt(omegas_x / omega_bar_x)  # (N, N)
         self.B_y = omegas_y * torch.sqrt(omegas_y / omega_bar_y)  # (N, N)
 
+        # Steady-state covariances (no feedback), shape (N, N, 3)
+        omegas_np = oscillator.omegas.ravel()  # (3N^2,)
+        xi = np.sqrt(1 + 4 * self.eta * self.gamma_meas**2 / omegas_np**2)
+        Vx_ss = 2 / (np.sqrt(2 * self.eta) * np.sqrt(xi + 1))
+        Vp_ss = 2 * xi / (np.sqrt(2 * self.eta) * np.sqrt(xi + 1))
+        Cxp_ss = np.sqrt(xi - 1) / (np.sqrt(self.eta) * np.sqrt(xi + 1))
+        N = self.N
+        self.Vxx_ss = torch.tensor(Vx_ss.reshape(N, N, 3), dtype=torch.float32, device=self.device)
+        self.Vpp_ss = torch.tensor(Vp_ss.reshape(N, N, 3), dtype=torch.float32, device=self.device)
+        self.Cxp_ss = torch.tensor(Cxp_ss.reshape(N, N, 3), dtype=torch.float32, device=self.device)
+
         self.reset()
 
     def reset(self, initial_conditions=None):
@@ -68,10 +79,15 @@ class TorchOscillatorEnv:
             self.xc = (2 * r) * torch.rand((self.batch_size, N, N, 3), device=self.device) - r
             self.pc = (2 * r) * torch.rand((self.batch_size, N, N, 3), device=self.device) - r
 
-        # Co-evolve covariances, initialized from thermal state
-        self.Vxx = torch.full((self.batch_size, N, N, 3), (1.0 + self.n_thermal), device=self.device)
-        self.Vpp = torch.full((self.batch_size, N, N, 3), (1.0 + self.n_thermal), device=self.device)
-        self.Cxp = torch.zeros((self.batch_size, N, N, 3), device=self.device)
+        # Co-evolve covariances, initialized from measurement steady state
+        self.Vxx = self.Vxx_ss.unsqueeze(0).expand(self.batch_size, -1, -1, -1).clone()
+        self.Vpp = self.Vpp_ss.unsqueeze(0).expand(self.batch_size, -1, -1, -1).clone()
+        self.Cxp = self.Cxp_ss.unsqueeze(0).expand(self.batch_size, -1, -1, -1).clone()
+
+        # Pre-generate noise for the full horizon
+        self._noise = torch.randn(
+            (self.horizon, self.batch_size, N, N, 3), device=self.device
+        ) * np.sqrt(self.dt)
 
         self.t = 0
         return self.state()
@@ -114,18 +130,22 @@ class TorchOscillatorEnv:
         omega_mod = self.omegas * (1.0 + u_param_x[:, :, None, None]
                                        + u_param_y[:, None, :, None])
 
-        # Independent noise per site per mode: (batch, N, N, 3)
-        dW = torch.randn((self.batch_size, N, N, 3), device=self.device) * np.sqrt(self.dt)
+        # Use pre-generated noise if available, else generate on the fly
+        if self.t < self._noise.shape[0]:
+            dW = self._noise[self.t]
+        else:
+            dW = torch.randn((self.batch_size, N, N, 3), device=self.device) * np.sqrt(self.dt)
 
         noise_x = (self.sqrt_2eta_gm * Vxx * dW).detach()
         noise_p = (self.sqrt_2eta_gm * Cxp * dW).detach()
 
-        # Momentum update (all modes)
-        new_pc = self.pc + (-omega_mod * self.xc * self.dt + noise_p)
-        # x-mode: u_cd_x[A] acts on all (A,b) via B_x — row force
-        new_pc[:, :, :, 0] = new_pc[:, :, :, 0] + self.B_x * u_cd_x[:, :, None] * self.dt
-        # y-mode: u_cd_y[B] acts on all (a,B) via B_y — col force
-        new_pc[:, :, :, 1] = new_pc[:, :, :, 1] + self.B_y * u_cd_y[:, None, :] * self.dt
+        # Cold damping force as full (batch, N, N, 3) tensor — no in-place indexing
+        cd_x = self.B_x * u_cd_x[:, :, None]       # (batch, N, N)
+        cd_y = self.B_y * u_cd_y[:, None, :]        # (batch, N, N)
+        cd_force = torch.stack([cd_x, cd_y, torch.zeros_like(cd_x)], dim=3)  # (batch, N, N, 3)
+
+        # Momentum update (all modes in one shot)
+        new_pc = self.pc + (-omega_mod * self.xc * self.dt + noise_p + cd_force * self.dt)
 
         # Position update (all modes)
         new_xc = self.xc + (self.omegas * new_pc * self.dt + noise_x)

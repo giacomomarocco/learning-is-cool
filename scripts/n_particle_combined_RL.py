@@ -24,24 +24,24 @@ dirname = os.path.dirname(os.path.abspath(__file__))
 # ============================================================
 # Parameters
 # ============================================================
-n_th = 10
-initial_temperature = 10
+phase_space_range = 25
 gamma_BA = 18.8 / 104
 eta = 0.2
-dt = 0.05
-horizon = 400
+dt = 0.01
+# horizon = int(2 * 2 * np.pi / dt)
+horizon = 50
 batch_size = 8192
-modulation_depth = 0.5  # max fractional change in omega^2
+modulation_depth = 0.25  # max fractional change in omega^2
 g_fb = 1.0
 q_cost = (g_fb)**(-2)
-n_iterations = 500
+n_iterations = 750
 
 # 2D NxN grid — [omega_x, omega_y, omega_z] per site
 # Example: 2x2 grid
-N_grid = 2
+N_grid = 3
 base_x = np.linspace(1.0, 1.1, N_grid)
-base_y = np.linspace(1.01, 1.11, N_grid)
-base_z = np.linspace(1.02, 1.12, N_grid)
+base_y = np.linspace(1.63, 1.79, N_grid)
+base_z = np.linspace(2.46, 2.64, N_grid)
 omegas = np.zeros((N_grid, N_grid, 3))
 for a in range(N_grid):
     for b in range(N_grid):
@@ -52,8 +52,7 @@ for a in range(N_grid):
 # CLI overrides
 from cli_utils import parse_overrides
 overrides = parse_overrides()
-n_th = overrides.get('n_th', n_th)
-initial_temperature = overrides.get('initial_temperature', initial_temperature)
+phase_space_range = overrides.get('phase_space_range', phase_space_range)
 gamma_BA = overrides.get('gamma_BA', gamma_BA)
 eta = overrides.get('eta', eta)
 dt = overrides.get('dt', dt)
@@ -97,7 +96,7 @@ print(f"Using device: {device}")
 print(f"Cooling {N}x{N} grid ({N*N} oscillators, 3 modes each)")
 print(f"Frequencies shape: {omegas.shape}")
 
-osc_array = GaussianOscillatorArray(omegas=omegas, n_thermal=n_th, gamma_meas=gamma_BA, eta=eta)
+osc_array = GaussianOscillatorArray(omegas=omegas, gamma_meas=gamma_BA, eta=eta)
 
 def torch_rollout_env(policy, env, horizon):
     env.reset()
@@ -148,8 +147,8 @@ def train_policy(policy, env, n_iterations=1500, lr=0.0005, eval_every=50):
             with torch.no_grad():
                 avg = sum(
                     torch_rollout_env(policy, env, horizon=horizon).item()
-                    for _ in range(5)
-                ) / 5
+                    for _ in range(2)
+                ) / 2
             history.append((iteration, avg))
             elapsed = time.perf_counter() - t_start
             per_iter = elapsed / (iteration + 1)
@@ -183,11 +182,15 @@ train_env = TorchOscillatorEnv(osc_array, batch_size=batch_size, dt=dt,
                                horizon=horizon,
                                modulation_depth=modulation_depth,
                                cost_u_weight=q_cost,
-                               phase_space_range=np.sqrt(initial_temperature),
+                               phase_space_range=phase_space_range,
                                device=device)
 
+# Compile policy and env step for faster execution
+compiled_policy = torch.compile(combined_policy)
+train_env.step = torch.compile(train_env.step)
+
 history_combined = train_policy(
-    combined_policy,
+    compiled_policy,
     train_env,
     n_iterations=n_iterations,
     lr=0.0005
@@ -223,54 +226,47 @@ plt.close()
 # ============================================================
 def simulate_grid_trajectory(policy, env, horizon_sim):
     state = env.reset()
+    dev = env.device
 
-    x_history = []
-    p_history = []
-    n_history = []
-    u_cd_x_history = []
-    u_cd_y_history = []
-    u_param_x_history = []
-    u_param_y_history = []
-    times = []
+    # Pre-allocate on device — single transfer at the end
+    x_history = torch.zeros(horizon_sim, N, N, 3, device=dev)
+    p_history = torch.zeros(horizon_sim, N, N, 3, device=dev)
+    n_history = torch.zeros(horizon_sim, N, N, 3, device=dev)
+    u_cd_x_history = torch.zeros(horizon_sim, N, device=dev)
+    u_cd_y_history = torch.zeros(horizon_sim, N, device=dev)
+    u_param_x_history = torch.zeros(horizon_sim, N, device=dev)
+    u_param_y_history = torch.zeros(horizon_sim, N, device=dev)
 
     with torch.no_grad():
         for t_step in range(horizon_sim):
-            x_history.append(env.xc[0].cpu().numpy().copy())   # (N, N, 3)
-            p_history.append(env.pc[0].cpu().numpy().copy())
-            times.append(t_step * env.dt)
+            x_history[t_step] = env.xc[0]
+            p_history[t_step] = env.pc[0]
 
-            # Per-mode n_bar: (1, N, N, 3)
             n_per_mode = (env.xc**2 + env.Vxx + env.pc**2 + env.Vpp) / 4.0 - 0.5
-            n_history.append(n_per_mode[0].cpu().numpy().copy())  # (N, N, 3)
+            n_history[t_step] = n_per_mode[0]
 
             u_raw = policy(state)  # (1, 4N)
-            u_cd_x = u_raw[0, :N]
-            u_cd_y = u_raw[0, N:2*N]
-            u_param_x = env.modulation_depth * torch.tanh(u_raw[0, 2*N:3*N])
-            u_param_y = env.modulation_depth * torch.tanh(u_raw[0, 3*N:])
-            u_cd_x_history.append(u_cd_x.cpu().numpy().copy())
-            u_cd_y_history.append(u_cd_y.cpu().numpy().copy())
-            u_param_x_history.append(u_param_x.cpu().numpy().copy())
-            u_param_y_history.append(u_param_y.cpu().numpy().copy())
+            u_cd_x_history[t_step] = u_raw[0, :N]
+            u_cd_y_history[t_step] = u_raw[0, N:2*N]
+            u_param_x_history[t_step] = env.modulation_depth * torch.tanh(u_raw[0, 2*N:3*N])
+            u_param_y_history[t_step] = env.modulation_depth * torch.tanh(u_raw[0, 3*N:])
 
             env.step(u_raw)
             state = env.state()
 
-    # x_history: list of (N, N, 3) -> stack to (horizon, N, N, 3)
-    x_hist = np.array(x_history)
-    p_hist = np.array(p_history)
-    n_hist = np.array(n_history)
-    return (np.array(times), x_hist, p_hist,
-            np.array(u_cd_x_history), np.array(u_cd_y_history),
-            np.array(u_param_x_history), np.array(u_param_y_history),
-            n_hist)
+    times = np.arange(horizon_sim) * env.dt
+    return (times,
+            x_history.cpu().numpy(), p_history.cpu().numpy(),
+            u_cd_x_history.cpu().numpy(), u_cd_y_history.cpu().numpy(),
+            u_param_x_history.cpu().numpy(), u_param_y_history.cpu().numpy(),
+            n_history.cpu().numpy())
 
 
 sim_horizon = 2000
-eval_env = TorchOscillatorEnv(osc_array, batch_size=1, dt=dt,
+eval_env = TorchOscillatorEnv(osc_array, batch_size=25, dt=dt,
                                horizon=sim_horizon,
                                modulation_depth=modulation_depth,
-                               phase_space_range=np.sqrt(initial_temperature),
+                               phase_space_range=phase_space_range,
                                device=device)
 
 times, x_sim, p_sim, u_cx, u_cy, u_px, u_py, n_sim = simulate_grid_trajectory(
@@ -331,24 +327,24 @@ n_compare_horizon = 2000
 compare_env = TorchOscillatorEnv(osc_array, batch_size=n_traj, dt=dt,
                                  horizon=n_compare_horizon,
                                  modulation_depth=modulation_depth,
-                                 phase_space_range=np.sqrt(initial_temperature),
+                                 phase_space_range=phase_space_range,
                                  device=device)
 compare_env.reset()
 
-# n_bars: (N, N, 3, n_traj, n_compare_horizon)
-n_bars_history = np.zeros((N, N, 3, n_traj, n_compare_horizon))
+# Accumulate on device: (n_compare_horizon, n_traj, N, N, 3)
+n_bars_history = torch.zeros(n_compare_horizon, n_traj, N, N, 3, device=device)
 
 with torch.no_grad():
     for t in range(n_compare_horizon):
-        n_per_mode = (compare_env.xc**2 + compare_env.Vxx
-                      + compare_env.pc**2 + compare_env.Vpp) / 4.0 - 0.5  # (n_traj, N, N, 3)
-        n_bars_history[:, :, :, :, t] = n_per_mode.cpu().numpy().transpose(1, 2, 3, 0)
+        n_bars_history[t] = (compare_env.xc**2 + compare_env.Vxx
+                             + compare_env.pc**2 + compare_env.Vpp) / 4.0 - 0.5
         state = compare_env.state()
         u_raw = combined_policy(state)
         compare_env.step(u_raw)
 
-# Average over trajectories and last quarter: (N, N, 3)
-n_final_avg = np.mean(n_bars_history[:, :, :, :, -n_compare_horizon // 4:], axis=(3, 4))
+# Transfer once and average over trajectories and last quarter: (N, N, 3)
+n_bars_np = n_bars_history.cpu().numpy()  # (T, n_traj, N, N, 3)
+n_final_avg = np.mean(n_bars_np[-n_compare_horizon // 4:], axis=(0, 1))
 
 # LQR comparison for x-mode rows
 lqr_grid = GridFeedbackLQR(omegas, q=q_cost)
@@ -363,22 +359,22 @@ print("=" * 60)
 zero_env = TorchOscillatorEnv(osc_array, batch_size=n_traj, dt=dt,
                               horizon=n_compare_horizon,
                               modulation_depth=modulation_depth,
-                              phase_space_range=np.sqrt(initial_temperature),
+                              phase_space_range=phase_space_range,
                               device=device)
 zero_env.reset()
 
-n_bars_zero = np.zeros((N, N, 3, n_traj, n_compare_horizon))
+n_bars_zero = torch.zeros(n_compare_horizon, n_traj, N, N, 3, device=device)
 
 with torch.no_grad():
+    u_zero = torch.zeros(n_traj, 4 * N, device=device)
     for t in range(n_compare_horizon):
-        n_per_mode = (zero_env.xc**2 + zero_env.Vxx
-                      + zero_env.pc**2 + zero_env.Vpp) / 4.0 - 0.5
-        n_bars_zero[:, :, :, :, t] = n_per_mode.cpu().numpy().transpose(1, 2, 3, 0)
+        n_bars_zero[t] = (zero_env.xc**2 + zero_env.Vxx
+                          + zero_env.pc**2 + zero_env.Vpp) / 4.0 - 0.5
         state = zero_env.state()
-        u_zero = torch.zeros(n_traj, 4 * N, device=device)
         zero_env.step(u_zero)
 
-n_final_zero = np.mean(n_bars_zero[:, :, :, :, -n_compare_horizon // 4:], axis=(3, 4))  # (N, N, 3)
+n_bars_zero_np = n_bars_zero.cpu().numpy()
+n_final_zero = np.mean(n_bars_zero_np[-n_compare_horizon // 4:], axis=(0, 1))  # (N, N, 3)
 
 for a in range(N):
     for b in range(N):
