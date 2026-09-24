@@ -67,6 +67,8 @@ experimental Python source file, not a standard importable module.
 | `benchmark_compile.py`, `benchmark_forward_scaling.py` | Compilation and forward-simulation timing. |
 | `benchmark_training.py`, `benchmark_training_cpu.py`, `benchmark_gpu.py` | Training scalability experiments with different execution strategies. |
 | `benchmark_parametric_z.py` | Sweeps parametric gain and records axial/radial occupations, data, and plots. |
+| `compare_integrators.py` | Paired-noise Platen/Euler–Maruyama comparison on a cyclic 75-mode model, with reference halving, covariance-health checks, and timing/memory reports. Uses argparse; smoke is the default, extended is opt-in. |
+| `validate_integrators.py` | Focused assertions for deterministic/covariance convergence, fixed-noise gradients, reproducibility, and environment dispatch. |
 
 Older scripts may target earlier environment interfaces. Inspect their current
 imports, constructor calls, parameter blocks, and checkpoint requirements before
@@ -96,6 +98,12 @@ running them; a filename or docstring alone does not establish compatibility.
   before copying a formula.
 - Time is dimensionless unless explicitly converted for a plot. State any
   reference frequency used for SI units.
+- `TorchOscillatorEnv` defaults to the historical `legacy` momentum-first
+  update. Opt-in `euler_maruyama` and `platen` methods share the equations in
+  `gaussian_integrators.py`, retain diffusion gradients, and never clip
+  covariance failures. Use `modulation_depth=0.05` for combined row/column
+  modulation bounded by 0.1, and explicitly enable intensity-dependent recoil
+  when required by the experiment.
 
 ## Python tooling and execution
 
