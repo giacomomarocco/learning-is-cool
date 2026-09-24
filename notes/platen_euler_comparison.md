@@ -283,3 +283,45 @@ streams timestamped progress to the interactive session and its case log. CPU
 and CUDA environment assertions are both exercised when CUDA is available.
 Current execution details and estimate revisions are kept in
 `notes/integrator_comparison/extended_run_log.md`.
+
+### Surviving laptop disconnects
+
+Use `scripts/run_integrator_interactive.sh` inside **tmux on a Perlmutter login
+node**. The tmux server owns the interactive `salloc` process, so closing the
+local SSH connection does not end the allocation. The four-hour allocation
+limit and remote node availability still apply. No batch job is submitted.
+
+The launcher expects an isolated run root containing `code/` (the repository
+and its synced `.venv`) and `bin/uv`. It uses the run root for the uv cache,
+outputs and logs. For example, after connecting to Perlmutter:
+
+```sh
+ssh -t login01
+tmux new-session -s integrators-20260924
+bash "$SCRATCH/integrator_comparison_20260924/code/scripts/run_integrator_interactive.sh" \
+  "$SCRATCH/integrator_comparison_20260924" extended_cpu_persistent m5258
+```
+
+Detach with **Ctrl-b, then d**. To reattach, connect to Perlmutter, then to the
+same login node (`ssh -t login01` in this example), and run
+`tmux attach -t integrators-20260924`. Perlmutter's public SSH endpoint balances
+connections across login nodes, so the node name matters. See the
+[NERSC connection documentation](https://docs.nersc.gov/connect/).
+
+The launcher refuses existing output names. It records `<output>.login_host`,
+`<output>.job_id`, `<output>.launch.log` and, after exit, `<output>.status`.
+Successful completion automatically validates and merges all twelve cases into
+`<output>/summary/`, then releases the allocation. The merge also runs on the
+compute node. A nonzero exit status records execution failure; numerical
+failures within completed diagnostic cases remain scientific result records.
+Progress and ETA logs continue to update remotely without a connected laptop.
+
+**Active run, 2026-09-24 20:45 UTC:** job 58836116 on CPU node `nid004203`,
+account `m5258`; detached tmux session `integrators-20260924` on `login01`.
+Output root is `$SCRATCH/integrator_comparison_20260924/extended_cpu_persistent`.
+All twelve cases progressed after the launching SSH connection exited,
+verified from a fresh connection. Estimated completion is 22:10–22:30 UTC
+(15:10–15:30 Pacific), subject to later I/O and timing overhead. This replaces
+cancelled job 58835882, whose early partial output is preserved in
+`extended_cpu/`. The launcher merges and releases the allocation automatically.
+The extended results and any decision about the training default are pending.
