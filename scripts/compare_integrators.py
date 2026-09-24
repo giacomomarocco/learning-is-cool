@@ -10,6 +10,7 @@ coarser Wiener increment is a sum of the same dt=0.01/256 increments.
 
 import argparse
 import csv
+from datetime import datetime, timezone
 import json
 import math
 from pathlib import Path
@@ -29,6 +30,55 @@ from learn_to_cool.gaussian_integrators import (
 CONTROL_DT = 0.01
 FINE_SUBSTEPS = 256
 SCENARIOS = ("no_feedback", "modulation_minus", "modulation_plus", "seeded_policy")
+
+
+def duration_text(seconds):
+    minutes = max(0, round(seconds / 60))
+    return f'{minutes // 60}h {minutes % 60:02d}m'
+
+
+class ProgressLog:
+    """Timestamped on-disk log with estimates revised from completed intervals."""
+
+    def __init__(self, output, jobs, estimates, period):
+        self.path = output / 'progress.log'
+        self.jobs, self.estimates, self.period = jobs, estimates, period
+        self.started = self.last_update = time.perf_counter()
+        self.index = -1
+        self.log(f'Starting {len(jobs)} accuracy runs. Initial estimated runtime: '
+                 f'{duration_text(sum(estimates[j[:2]] for j in jobs))}; '
+                 'allow additional time for result I/O and BPTT workers.')
+
+    def log(self, message):
+        timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+        line = f'[{timestamp}] {message}'
+        print(line, flush=True)
+        with self.path.open('a') as stream:
+            stream.write(line + '\n')
+
+    def begin(self, method, substeps, scenario, delta):
+        self.index += 1
+        self.active_started = time.perf_counter()
+        self.key = method, substeps
+        self.label = f'Delta={delta:g} {scenario} {method} dt={CONTROL_DT/substeps:.8g}'
+        self.log(f'Run {self.index+1}/{len(self.jobs)}: {self.label}')
+
+    def update(self, completed, total, force=False, status=None):
+        now = time.perf_counter()
+        if not force and now - self.last_update < self.period:
+            return
+        self.last_update = now
+        elapsed = now - self.active_started
+        expected = elapsed * total / max(completed, 1)
+        future = sum(self.estimates[j[:2]] for j in self.jobs[self.index+1:])
+        remaining = (0 if status else max(expected - elapsed, 0)) + future
+        self.log(f'Elapsed {duration_text(now-self.started)}; run {self.index+1}/{len(self.jobs)} '
+                 f'{completed}/{total} controller intervals ({100*completed/total:.1f}%); '
+                 f'estimated remaining {duration_text(remaining)} '
+                 f'(total {duration_text(now-self.started+remaining)})'
+                 + (f'; status={status}' if status else ''))
+        if status == 'ok':
+            self.estimates[self.key] = elapsed
 
 
 def frequencies(delta):
@@ -106,19 +156,29 @@ def mean_sem(values):
     return values.mean(0), values.std(0, ddof=1) / math.sqrt(values.shape[0])
 
 
-def run_accuracy(method, substeps, scenario, delta, args):
+def run_accuracy(method, substeps, scenario, delta, args, progress=None, history_path=None):
     dtype, device = getattr(torch, args.dtype), args.device
     state, omega, bx, by = model(delta, args.batch, dtype, device)
     net = policy(args.seed + 1, dtype, device)
-    samples = [torch.stack(state).double().cpu().numpy()]
+    intervals = interval_count(args.duration)
+    if history_path is None:
+        samples = [torch.stack(state).double().cpu().numpy()]
+    else:
+        # Controller-time histories otherwise require several simultaneous GB.
+        samples = np.lib.format.open_memmap(history_path, mode='w+', dtype=np.float64,
+                                            shape=(intervals+1, 5, *state[0].shape))
+        samples[0] = torch.stack(state).double().cpu().numpy()
+    sample_count = 1
     failures = dict(nonfinite_modes=0, nonpositive_diagonals=0, uncertainty_violations=0)
     minimum_det, minimum_var, first_failure = math.inf, math.inf, None
     solver_time = 0.
     completed_steps = 0
     started = time.perf_counter()
+    if progress is not None:
+        progress.begin(method, substeps, scenario, delta)
     with torch.no_grad():
         for interval, increments in enumerate(noise_blocks(
-                args.batch, interval_count(args.duration), substeps, args.seed, dtype, device)):
+                args.batch, intervals, substeps, args.seed, dtype, device)):
             # Only solver/controller work is timed; noise, diagnostics and transfers are excluded.
             synchronize(device)
             tick = time.perf_counter()
@@ -147,18 +207,30 @@ def run_accuracy(method, substeps, scenario, delta, args):
                     break
             if failed:
                 break
-            samples.append(torch.stack(state).double().cpu().numpy())
-    history = np.stack(samples)
+            sample = torch.stack(state).double().cpu().numpy()
+            if history_path is None:
+                samples.append(sample)
+            else:
+                samples[sample_count] = sample
+            sample_count += 1
+            if progress is not None:
+                progress.update(sample_count-1, intervals)
+    if history_path is None:
+        history = np.stack(samples)
+    else:
+        samples.flush()
+        history = samples[:sample_count]
     status = 'nonfinite' if failures['nonfinite_modes'] else (
         'covariance_failure' if first_failure is not None else 'ok')
+    if progress is not None:
+        progress.update(sample_count-1, intervals, force=True, status=status)
     row = dict(method=method, substeps=substeps, dt=CONTROL_DT/substeps,
                scenario=scenario, delta=delta, dtype=args.dtype, status=status,
                first_failure_time=first_failure, completed_steps=completed_steps,
                completed_time=(len(history)-1)*CONTROL_DT,
                forward_seconds=solver_time, diagnostic_wall_seconds=time.perf_counter()-started,
                min_determinant=minimum_det, min_variance=minimum_var, **failures)
-    n = per_direction(occupation(history))
-    avg, sem = mean_sem(n[-1])
+    avg, sem = mean_sem(per_direction(occupation(history[-1:]))[0])
     for m, label in enumerate('xyz'):
         row[f'n_{label}'], row[f'n_{label}_sem'] = avg[m], sem[m]
         if scenario == 'no_feedback':
@@ -166,22 +238,42 @@ def run_accuracy(method, substeps, scenario, delta, args):
     return row, history
 
 
-def compare(row, history, reference):
+def compare(row, history, reference, chunk_size=16):
     # Only compare common, fully completed controller intervals after failure.
     n = min(len(history), len(reference))
-    difference = history[:n] - reference[:n]
     row['comparison_time'] = (n-1) * CONTROL_DT
-    row['trajectory_mean_rms'] = float(np.sqrt(np.mean(difference[:, :2]**2)))
-    row['terminal_mean_rms'] = float(np.sqrt(np.mean(difference[-1, :2]**2)))
-    row['covariance_rms'] = float(np.sqrt(np.mean(difference[:, 2:]**2)))
-    row['covariance_max_abs'] = float(np.max(np.abs(difference[:, 2:])))
-    for component, label in enumerate(('Vxx', 'Vpp', 'Cxp'), 2):
-        row[f'{label}_max_abs'] = float(np.max(np.abs(difference[:, component])))
-    paired = per_direction(occupation(history[:n])[-1] - occupation(reference[:n])[-1])
+    mean_squared_sum = covariance_squared_sum = 0.
+    component_max = np.zeros(3)
+    for start in range(0, n, chunk_size):
+        difference = history[start:min(start+chunk_size, n)] - reference[start:min(start+chunk_size, n)]
+        mean_squared_sum += np.sum(difference[:, :2]**2)
+        covariance_squared_sum += np.sum(difference[:, 2:]**2)
+        component_max = np.maximum(component_max, np.max(np.abs(difference[:, 2:]),
+                                   axis=(0, 2, 3, 4, 5)))
+    modes = np.prod(history.shape[2:])
+    row['trajectory_mean_rms'] = float(np.sqrt(mean_squared_sum/(n*2*modes)))
+    row['terminal_mean_rms'] = float(np.sqrt(np.mean((history[n-1, :2]-reference[n-1, :2])**2)))
+    row['covariance_rms'] = float(np.sqrt(covariance_squared_sum/(n*3*modes)))
+    row['covariance_max_abs'] = float(component_max.max())
+    for label, value in zip(('Vxx', 'Vpp', 'Cxp'), component_max):
+        row[f'{label}_max_abs'] = float(value)
+    paired = per_direction(occupation(history[n-1:n])[0] - occupation(reference[n-1:n])[0])
     mean, sem = mean_sem(paired)
     for m, label in enumerate('xyz'):
         row[f'paired_n_{label}'], row[f'paired_n_{label}_sem'] = mean[m], sem[m]
     return row
+
+
+def calibrate_runtime(args, jobs):
+    """Short full-batch probes include the same finest-grid noise generation."""
+    probe = argparse.Namespace(**vars(args))
+    probe.duration = .05
+    estimates = {}
+    for method, substeps in dict.fromkeys(j[:2] for j in jobs):
+        probe.dtype = 'float64' if substeps >= 128 else args.dtype
+        row, _ = run_accuracy(method, substeps, 'seeded_policy', 1., probe)
+        estimates[method, substeps] = row['diagnostic_wall_seconds'] * args.duration / probe.duration
+    return estimates
 
 
 def performance_worker(config):
@@ -358,6 +450,12 @@ def main():
     parser.add_argument('--benchmark-duration', type=float, default=.1)
     parser.add_argument('--skip-benchmark', action='store_true')
     parser.add_argument('--output', default=None)
+    parser.add_argument('--progress-seconds', type=float, default=30.,
+                        help='Interval between timestamped progress/ETA updates')
+    parser.add_argument('--disk-history', action='store_true',
+                        help='Use disk-backed controller-time histories (automatic for extended)')
+    parser.add_argument('--estimate-only', action='store_true',
+                        help='Calibrate runtime with short full-batch probes, then exit')
     parser.add_argument('--report-only', type=Path, help='Regenerate report/plots from an existing results directory')
     parser.add_argument('--worker', help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -374,6 +472,8 @@ def main():
     args.splittings = args.splittings or ([1.] if smoke else [.01, .1, 1.])
     if args.batch < 2 or args.threads < 1 or any(k not in range(7) for k in args.levels):
         parser.error('Use batch >= 2, threads >= 1 and levels 0..6')
+    if args.progress_seconds <= 0:
+        parser.error('Progress interval must be positive')
     if any(d <= 0 for d in args.splittings):
         parser.error('Splittings must be positive')
     interval_count(args.duration)
@@ -382,6 +482,27 @@ def main():
     output = Path(args.output or f'notes/integrator_comparison/{args.profile}_{time.strftime("%Y%m%d_%H%M%S")}')
     if (output/'results.json').exists():
         parser.error('Output already contains results; choose a new directory')
+    output.mkdir(parents=True, exist_ok=True)
+    jobs = [(method, substeps, scenario, delta)
+            for delta in args.splittings for scenario in args.scenarios
+            for method, substeps in [('platen', 128), ('platen', 256)]
+            + [(m, 2**k) for m in METHODS for k in args.levels]]
+    print('Calibrating runtime with short full-batch probes...', flush=True)
+    estimates = calibrate_runtime(args, jobs)
+    estimate_record = dict(accuracy_seconds=sum(estimates[j[:2]] for j in jobs),
+                          per_run_seconds={f'{m}/{s}':v for (m, s), v in estimates.items()},
+                          note='Excludes I/O and BPTT workers; early failures may shorten the sweep.')
+    (output/'runtime_estimate.json').write_text(json.dumps(estimate_record, indent=2)+'\n')
+    if args.estimate_only:
+        print(json.dumps(estimate_record, indent=2), flush=True)
+        return
+    progress = ProgressLog(output, jobs, estimates, args.progress_seconds)
+    args.disk_history = args.disk_history or args.profile == 'extended'
+    scratch = output / '.history'
+    if args.disk_history:
+        scratch.mkdir(exist_ok=True)
+    def history_path(name):
+        return scratch / f'{name}.npy' if args.disk_history else None
     metadata = vars(args).copy() | dict(torch_version=torch.__version__,
         platform=platform.platform(), control_dt=CONTROL_DT, gamma0=.05, eta=.5,
         initial_occupation=5., frequency_formula='wz=1+((a+b)%5)*delta; wx=4.5*wz; wy=4.1*wz',
@@ -394,11 +515,12 @@ def main():
     rows = []
     for delta in args.splittings:
         for scenario in args.scenarios:
-            print(f'Delta={delta:g} {scenario}: float64 reference and halving', flush=True)
             requested_dtype = args.dtype
             args.dtype = 'float64'
-            ref_row, reference = run_accuracy('platen', 128, scenario, delta, args)
-            check_row, check = run_accuracy('platen', 256, scenario, delta, args)
+            ref_row, reference = run_accuracy('platen', 128, scenario, delta, args,
+                                              progress, history_path('reference'))
+            check_row, check = run_accuracy('platen', 256, scenario, delta, args,
+                                            progress, history_path('finer'))
             args.dtype = requested_dtype
             compare(ref_row, reference, check)
             ref_row['role'], check_row['role'] = 'reference_halving_check', 'finer_reference'
@@ -407,12 +529,15 @@ def main():
             rows.extend((ref_row, check_row))
             save_results(output, metadata, rows)
             # Keep the reference trajectory for audit/reanalysis without storing fine-step paths.
+            progress.log(f'Saving reference trajectories: Delta={delta:g} {scenario}')
             np.savez_compressed(output/f'reference_delta{delta:g}_{scenario}.npz',
                                 reference=reference, finer=check,
                                 times=np.arange(len(reference))*CONTROL_DT)
+            del check
             for method in METHODS:
                 for level in args.levels:
-                    row, history = run_accuracy(method, 2**level, scenario, delta, args)
+                    row, history = run_accuracy(method, 2**level, scenario, delta, args,
+                                                 progress, history_path('candidate'))
                     row['role'] = 'candidate'
                     compare(row, history, reference)
                     row['reference_valid'] = reference_ok
@@ -421,14 +546,21 @@ def main():
                     row['trajectory_error_above_reference_floor'] = bool(
                         row['trajectory_mean_rms'] > 5 * ref_row['trajectory_mean_rms'])
                     if scenario == 'seeded_policy' and not args.skip_benchmark:
+                        progress.log(f'BPTT timing worker: {method} dt={row["dt"]:.8g}')
                         row.update(benchmark(method, 2**level, delta, args))
                     rows.append(row)
                     save_results(output, metadata, rows)
-                    print(f"  {method:15s} dt={row['dt']:.8g} {row['status']:18s} "
-                          f"path={row['trajectory_mean_rms']:.3g} cov={row['covariance_max_abs']:.3g} "
-                          f"forward={row['forward_seconds']:.2f}s", flush=True)
+                    progress.log(f"{method} dt={row['dt']:.8g} {row['status']} "
+                                 f"path={row['trajectory_mean_rms']:.3g} cov={row['covariance_max_abs']:.3g} "
+                                 f"forward={row['forward_seconds']:.2f}s")
+                    del history
+            del reference
+    if args.disk_history:
+        for name in ('reference', 'finer', 'candidate'):
+            history_path(name).unlink()
+        scratch.rmdir()
     write_report(output, metadata, rows)
-    print(f'Results: {output}', flush=True)
+    progress.log(f'Complete in {duration_text(time.perf_counter()-progress.started)}. Results: {output}')
 
 
 if __name__ == '__main__':

@@ -254,3 +254,32 @@ The human-readable smoke report is `notes/integrator_comparison/smoke/report.md`
 and its figure is `convergence_delta1.png` in that directory. Both reports and
 plots can be regenerated from a directory containing `results.json` with
 `--report-only`.
+
+## Extended execution and running estimates
+
+The diagnostic now calibrates expected runtime with short full-batch probes,
+then writes `progress.log` with UTC timestamps and estimates every 30 seconds.
+Use `--progress-seconds` to change this interval or `--estimate-only` to measure
+runtime without starting the sweep. The estimate excludes later result I/O and
+short BPTT timing workers; stopped numerical failures can shorten the sweep.
+Extended runs automatically use disk-backed controller-time histories and
+chunked error reductions. These changes preserve bitwise identical trajectories
+and error metrics within floating-point reduction roundoff.
+
+`scripts/integrator_shards.py` runs the twelve independent splitting/scenario
+combinations on Slurm ranks in an **interactive allocation**, with unchanged
+batch size, duration, timestep grid and noise pairing. It does not submit a job.
+For example, from the repository root inside a CPU allocation with 12 tasks:
+
+```sh
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
+srun --unbuffered -n 12 -c 2 --cpu-bind=cores uv run --no-sync scripts/integrator_shards.py --device cpu --output /path/to/run
+uv run --no-sync scripts/integrator_shards.py --output /path/to/run --merge
+```
+
+The merge validates configuration agreement and complete, nonduplicate coverage
+before writing `summary/results.json`, CSV, report and plots. Each rank also
+streams timestamped progress to the interactive session and its case log. CPU
+and CUDA environment assertions are both exercised when CUDA is available.
+Current execution details and estimate revisions are kept in
+`notes/integrator_comparison/extended_run_log.md`.

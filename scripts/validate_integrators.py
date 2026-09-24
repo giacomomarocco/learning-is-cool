@@ -16,6 +16,7 @@ from learn_to_cool.gaussian_integrators import (
 )
 from learn_to_cool.torch_oscillator_env import TorchOscillatorEnv
 from compare_integrators import frequencies, noise_blocks, policy, controls, model
+from compare_integrators import run_accuracy, compare
 
 
 def assert_close(a, b, **kwargs):
@@ -154,17 +155,19 @@ def noise_and_gradient_check():
 
 def environment_check():
     osc = SimpleNamespace(omegas=frequencies(.1), eta=.5, gamma_meas=.05)
-    for method in METHODS:
+    devices = ('cpu', 'cuda') if torch.cuda.is_available() else ('cpu',)
+    for method, device in [(m, d) for m in METHODS for d in devices]:
         env = TorchOscillatorEnv(osc, 2, horizon=2, dt=.01, dtype=torch.float64,
                                 integration_method=method, intensity_dependent_recoil=True,
-                                modulation_depth=.05, pregenerate_noise=False)
+                                modulation_depth=.05, pregenerate_noise=False, device=device)
         for derivative in drift(env.gaussian_state(), env.omegas, 0., 0., .05, .5)[2:]:
             assert_close(derivative, torch.zeros_like(derivative), atol=2e-12, rtol=0)
-        initial = torch.zeros((2, 5, 5, 3, 2), dtype=torch.float64)
-        vx = torch.full((2, 5, 5, 3), 11., dtype=torch.float64)
+        initial = torch.zeros((2, 5, 5, 3, 2), dtype=torch.float64, device=device)
+        vx = torch.full((2, 5, 5, 3), 11., dtype=torch.float64, device=device)
         covariances = (vx, vx, torch.zeros_like(vx))
-        dw = torch.randn(vx.shape, generator=torch.Generator().manual_seed(55), dtype=torch.float64)*.1
-        action = torch.full((2, 20), .2, dtype=torch.float64, requires_grad=True)
+        dw = (torch.randn(vx.shape, generator=torch.Generator().manual_seed(55),
+                          dtype=torch.float64)*.1).to(device)
+        action = torch.full((2, 20), .2, dtype=torch.float64, device=device, requires_grad=True)
         env.reset(initial, covariances=covariances)
         force, eps = action_controls(action, env.B_x, env.B_y, .05)
         expected = advance_gaussian(env.gaussian_state(), env.omegas, force, eps,
@@ -191,7 +194,7 @@ def environment_check():
     assert health['nonpositive_diagonals'] == 1 and health['uncertainty_violations'] == 1
     assert bad[2].item() < 0
     # Default legacy rule uses the updated momentum in dx, unlike true EM.
-    env = TorchOscillatorEnv(osc, 2, horizon=2, dtype=torch.float64)
+    env = TorchOscillatorEnv(osc, 2, horizon=2, dtype=torch.float64, device='cpu')
     assert env.integration_method == 'legacy'
     print('Environment dispatch, external noise, gradients and unmasked covariance failure: passed')
 
@@ -203,9 +206,9 @@ def legacy_regression(path):
     spec.loader.exec_module(old)
     osc = SimpleNamespace(omegas=frequencies(.1), eta=.5, gamma_meas=.05)
     torch.manual_seed(132)
-    before = old.TorchOscillatorEnv(osc, 2, horizon=3)
+    before = old.TorchOscillatorEnv(osc, 2, horizon=3, device='cpu')
     torch.manual_seed(132)
-    after = TorchOscillatorEnv(osc, 2, horizon=3)
+    after = TorchOscillatorEnv(osc, 2, horizon=3, device='cpu')
     assert_close(before._noise, after._noise, rtol=0, atol=0)
     for _ in range(3):
         action = torch.full((2, 20), .2)
@@ -213,6 +216,27 @@ def legacy_regression(path):
         for name in ('xc', 'pc', 'Vxx', 'Vpp', 'Cxp'):
             assert_close(getattr(before, name), getattr(after, name), rtol=0, atol=0)
     print('Legacy default is bitwise unchanged against saved baseline')
+
+
+def diagnostic_storage_check():
+    import argparse
+    import tempfile
+    args = argparse.Namespace(batch=2, duration=.03, dtype='float64', device='cpu', seed=13)
+    _, reference = run_accuracy('platen', 32, 'seeded_policy', 1., args)
+    with tempfile.TemporaryDirectory() as directory:
+        for method in METHODS:
+            _, memory = run_accuracy(method, 4, 'seeded_policy', 1., args)
+            row, disk = run_accuracy(method, 4, 'seeded_policy', 1., args,
+                                     history_path=Path(directory)/f'{method}.npy')
+            np.testing.assert_array_equal(memory, disk)
+            compare(row, disk, reference, chunk_size=2)
+            difference = memory-reference
+            np.testing.assert_allclose(row['trajectory_mean_rms'],
+                                       np.sqrt(np.mean(difference[:, :2]**2)), rtol=1e-14)
+            np.testing.assert_allclose(row['covariance_rms'],
+                                       np.sqrt(np.mean(difference[:, 2:]**2)), rtol=1e-14)
+            assert row['covariance_max_abs'] == np.max(np.abs(difference[:, 2:]))
+    print('Disk-backed trajectories and chunked comparison agree with in-memory calculations')
 
 
 def main():
@@ -226,6 +250,7 @@ def main():
     weak_heating_check()
     noise_and_gradient_check()
     environment_check()
+    diagnostic_storage_check()
     if args.legacy_baseline:
         legacy_regression(args.legacy_baseline)
     print('All integrator checks passed.')

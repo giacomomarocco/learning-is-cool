@@ -69,6 +69,7 @@ experimental Python source file, not a standard importable module.
 | `benchmark_parametric_z.py` | Sweeps parametric gain and records axial/radial occupations, data, and plots. |
 | `compare_integrators.py` | Paired-noise Platen/Euler–Maruyama comparison on a cyclic 75-mode model, with reference halving, covariance-health checks, and timing/memory reports. Uses argparse; smoke is the default, extended is opt-in. |
 | `validate_integrators.py` | Focused assertions for deterministic/covariance convergence, fixed-noise gradients, reproducibility, and environment dispatch. |
+| `integrator_shards.py` | Distributes extended-profile cases across ranks inside an interactive Slurm allocation, streams progress, and validates/merges completed results. |
 
 Older scripts may target earlier environment interfaces. Inspect their current
 imports, constructor calls, parameter blocks, and checkpoint requirements before
