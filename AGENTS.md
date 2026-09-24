@@ -47,6 +47,7 @@ All paths below are relative to `src/learn_to_cool/`.
 | `optimal_feedback_n_oscillators.py` | `OptimalFeedbackNOscillators`: common-control LQR gains and analytic steady-state covariances/occupations. `GridFeedbackLQR` combines row and column controllers. |
 | `torch_oscillator_env.py` | `TorchOscillatorEnv`: batched differentiable array simulation for policy training, evolving means and covariances with pre-generated noise. |
 | `cli_utils.py` | `parse_overrides`: parses `key=value` arguments into integers, floats, strings, comma-separated numeric lists, or JSON lists. Each script chooses which keys to use. |
+| `array_training.py` | Functional Platen rollouts, physical-force-cost LQR, covariance-aware residual policy, and resumable array training. See `docs/array_training.md`. |
 | `utils/plotting.py` | Shared occupation-trajectory, cooling-comparison, and gain-performance plots. |
 
 The extensionless `src/learn_to_cool/parametric_feedback` is a separate
@@ -57,6 +58,8 @@ experimental Python source file, not a standard importable module.
 | Script(s) in `scripts/` | Purpose |
 | --- | --- |
 | `n_particle_combined_RL.py` | Main N-by-N array trainer combining cold damping and parametric feedback. Saves `weights/n_particle_combined_rl.pth`. |
+| `train_array_feedback.py` | New 5x5 residual-LQR trainer with centroid/physical-force costs, a fixed-step horizon curriculum, explicit remote benchmark/evaluation modes, and tiny CPU smoke mode. Uses argparse. |
+| `validate_array_training.py` | Tiny CPU/eager assertions for physical costs, LQR, feedback gradients, curriculum, CLI safety, and checkpoint replay. No compilation or long trajectories. |
 | `combined_cooling_RL.py`, `parametric_RL.py` | Earlier combined-feedback and parametric-only training experiments. |
 | `single_particle_RL.py`, `two_particle_RL.py` | Earlier small-system policy-learning experiments. |
 | `compare_lqr_rl_cooling.py` | Compares analytic grid LQR feedback against a saved RL policy. |
@@ -91,6 +94,11 @@ running them; a filename or docstring alone does not establish compatibility.
 - `TorchOscillatorEnv.n_bar()` sums the three modes per site;
   `mean_energy()` averages frequency-weighted energy across sites and modes.
   Preserve this distinction when defining losses and comparing plots.
+- The new `array_training` policy observes all five Gaussian state components
+  (375 values for 5x5). Its cost sums centroid energies over directions per
+  particle, excludes covariance energy, and penalizes physical cold forces as
+  `sum(omega*f_p**2)/(2*N*N*g_fb**2)`. It does not use the legacy energy/command
+  cost. Its LQR gains use exactly the same actuator coefficients and cost.
 - Frequency ordering varies by experiment: some combined-feedback studies use
   stiff z modes; axial parametric-cooling studies use soft z modes. Read the
   script's frequency construction rather than imposing one ordering globally.
@@ -151,6 +159,11 @@ existing convention and verify imports when moving code.
   matching parameters; inspect numerical errors rather than only exit status.
 - Use small runs first, set NumPy/Torch seeds for reproducibility when relevant,
   and use `MPLBACKEND=Agg uv run scripts/<name>.py` for headless plots.
+- For the new array trainer, run only `validate_array_training.py` and
+  `train_array_feedback.py --smoke` locally unless instructed otherwise.
+  Training, compilation benchmarks, and scaling runs belong on remote compute
+  servers; see `docs/array_training.md`. Normal runs require explicit batch,
+  iteration budget, and output; never substitute old trainers as smoke tests.
 - Check checkpoint availability: some diagnostics fall back to an untrained
   policy, which is not evidence of trained-policy performance.
 - Keep research notes in `notes/`; major tasks get their own Markdown file
