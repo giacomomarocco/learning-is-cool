@@ -211,6 +211,39 @@ Only `--smoke` is intended locally; it uses three batch-2, T=0.02 CPU/eager
 trials and temporary outputs. Estimator and matched-path batch-averaging checks
 are included in `validate_array_training.py`.
 
+### Perlmutter batch comparison (2026-09-24)
+
+Diagnostic source `220994f` completed 240 fixed-weight gradient measurements on
+A100-SXM4-40GB GPUs: batches 16/32/64, initial and saved pilot policies, and
+T=5/20/100. Each short/medium-horizon case used 16 independent batches; each
+T=100 case used eight. There were no optimizer updates, OOMs, nonfinite
+gradients, or covariance failures. The interactive allocation was released.
+
+At the saved pilot policy:
+
+| Batch | T=5 gradient variance / B16 | T=5 forward/backward (s) | T=100 forward/backward (s) | T=100 peak allocated (GiB) |
+| --- | ---: | ---: | ---: | ---: |
+| 16 | 1.000 | 1.354 | 29.228 | 8.37 |
+| 32 | 0.593 | 1.426 | 30.762 | 15.99 |
+| 64 | 0.302 | 1.436 | 31.002 | 31.96 |
+
+Times are medians, excluding compilation warmup and optimizer steps. Across
+both policies and all horizons, B64 reduced variance to 0.237–0.302 times B16
+and increased trajectory throughput 3.64–3.88x. **B64 is the recommended next
+training batch on this hardware**, with existing optimizer settings as the
+starting point. It is the largest batch tested, not a demonstrated optimum.
+
+Overall gradient agreement can hide weak parametric signals. At the pilot
+policy with B64, pairwise parametric-output gradient cosine averaged 0.888 at
+T=5, but only 0.060 at T=20 and -0.023 at T=100. The latter mean gradients were
+poorly resolved; larger batches alone have not demonstrated adequate late-stage
+parametric learning. Actual learning/convergence and cooling quality remain to
+be tested. Microbatching and time checkpointing were unnecessary through B64.
+
+Raw gradients, JSON, logs, and a comparison figure are in the ignored directory
+`data/array_training/batch_20260924T220821Z/`. Detailed analysis is in
+`notes/array_training/batch_diagnostics_20260924.md`.
+
 ## First Perlmutter GPU pilot (2026-09-24)
 
 Source `02c9336` completed an interactive Perlmutter run using one A100-SXM4-40GB
