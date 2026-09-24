@@ -61,6 +61,8 @@ def main():
     parser.add_argument('--device', choices=('cpu', 'cuda'), default='cuda')
     parser.add_argument('--dtype', choices=('float32', 'float64'), default='float64')
     parser.add_argument('--merge', action='store_true')
+    parser.add_argument('--resume', action='store_true',
+                        help='Append logs and resume each case using its saved configuration')
     args = parser.parse_args()
     if args.merge:
         merge(args.output)
@@ -74,11 +76,14 @@ def main():
     for index in range(rank, len(CASES), workers):
         delta, scenario = CASES[index]
         destination = case_directory(args.output, delta, scenario)
-        with (args.output/f'{destination.name}.log').open('x') as log:
+        with (args.output/f'{destination.name}.log').open('a' if args.resume else 'x') as log:
             command = [sys.executable, str(Path(__file__).with_name('compare_integrators.py')),
                        '--profile', 'extended', '--device', args.device, '--dtype', args.dtype,
                        '--splittings', str(delta), '--scenarios', scenario,
                        '--output', str(destination)]
+            if args.resume:
+                command = [sys.executable, str(Path(__file__).with_name('compare_integrators.py')),
+                           '--resume-from', str(destination)]
             with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                   text=True, bufsize=1) as process:
                 for line in process.stdout:

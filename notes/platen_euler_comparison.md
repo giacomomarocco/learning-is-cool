@@ -316,7 +316,7 @@ compute node. A nonzero exit status records execution failure; numerical
 failures within completed diagnostic cases remain scientific result records.
 Progress and ETA logs continue to update remotely without a connected laptop.
 
-**Active run, 2026-09-24 20:45 UTC:** job 58836116 on CPU node `nid004203`,
+**Initial persistent run, 2026-09-24 20:45 UTC:** job 58836116 on CPU node `nid004203`,
 account `m5258`; detached tmux session `integrators-20260924` on `login01`.
 Output root is `$SCRATCH/integrator_comparison_20260924/extended_cpu_persistent`.
 All twelve cases progressed after the launching SSH connection exited,
@@ -325,3 +325,44 @@ verified from a fresh connection. Estimated completion is 22:10–22:30 UTC
 cancelled job 58835882, whose early partial output is preserved in
 `extended_cpu/`. The launcher merges and releases the allocation automatically.
 The extended results and any decision about the training default are pending.
+
+### Recovering the interrupted extended run
+
+Job 58836116 failed at **2026-09-24 21:48:25 UTC**, after 1h04m48s. The first
+completed case could not render its plot because inherited Matplotlib settings
+enabled external TeX without the `cmr10.tfm` font. Slurm's failure propagation
+then terminated the other ranks. This was a reporting/execution failure, not a
+diagnostic numerical failure. The detached session survived; SSH disconnection
+did not cause this stop. There were **156 of 192 saved records**, including all
+24 reference runs. All twelve reference archives were intact.
+
+Reports now explicitly use Matplotlib's built-in font rendering in a scoped
+configuration, overriding external TeX settings. Result JSON/CSV files are
+replaced atomically. `--resume-from` loads a case's saved configuration and
+references, validates record identity, skips completed runs, and recomputes only
+missing whole trajectories from the same seed; no physical parameters or
+controller timing change. For example:
+
+```sh
+uv run scripts/compare_integrators.py --resume-from /path/to/case
+srun -n 12 -c 2 uv run scripts/integrator_shards.py --output /path/to/run --resume
+```
+
+For the persistent interactive launcher, append `resume` to the previous
+three-argument command. It appends per-case logs while creating new timestamped
+allocation logs/status files (`<output>.resume_<UTC>.*`), preserving the failed
+attempt's files. A short plotting/resume preflight runs on the compute node
+before the sweep; `--kill-on-bad-exit=0` lets independent ranks finish if another
+rank fails, while retaining the nonzero overall execution status.
+
+`uv run scripts/validate_integrator_resume.py` passed locally: missing candidate
+rows match uninterrupted numerical results exactly, saved rows/reference
+archives remain unchanged, completed cases do no integration, duplicates are
+rejected, and reports render even when site settings request TeX and all TeX
+calls are forced to fail. The existing full integrator assertions also passed.
+
+**Recovery active, 2026-09-24 22:46 UTC:** interactive CPU job 58839589 on
+`nid004142`, account `m5258`, in the same detached tmux session on `login01`.
+The compute-node preflight passed and all unfinished cases are progressing.
+Only 36 missing runs are being recomputed. The updated completion estimate is
+23:15–23:30 UTC (16:15–16:30 Pacific), allowing for timing/merge overhead.

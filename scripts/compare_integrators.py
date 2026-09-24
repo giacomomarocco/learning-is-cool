@@ -343,13 +343,15 @@ def clean_json(value):
 
 def save_results(output, metadata, rows):
     output.mkdir(parents=True, exist_ok=True)
-    (output/'results.json').write_text(json.dumps(clean_json(
+    (output/'results.json.tmp').write_text(json.dumps(clean_json(
         {'metadata': metadata, 'results': rows}), indent=2, allow_nan=False)+'\n')
+    (output/'results.json.tmp').replace(output/'results.json')
     fields = list(dict.fromkeys(k for r in rows for k in r))
-    with (output/'results.csv').open('w', newline='') as f:
+    with (output/'results.csv.tmp').open('w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fields, lineterminator='\n')
         writer.writeheader()
         writer.writerows(rows)
+    (output/'results.csv.tmp').replace(output/'results.csv')
 
 
 def write_report(output, metadata, rows):
@@ -413,26 +415,109 @@ def write_report(output, metadata, rows):
               'includes the interpreter, libraries, input noise and autograd. CUDA peak allocated '
               'memory is reported separately. Partial failed trajectories never qualify for timing comparisons.', '']
     (output/'report.md').write_text('\n'.join(lines))
-    for delta in metadata['splittings']:
-        fig, axes = plt.subplots(2, len(metadata['scenarios']), figsize=(13, 6), squeeze=False)
-        for j, scenario in enumerate(metadata['scenarios']):
-            for method in METHODS:
-                group = sorted((r for r in candidates if r['delta'] == delta and
-                                r['scenario'] == scenario and r['method'] == method and
-                                r['status'] == 'ok'), key=lambda r: r['dt'])
-                for i, metric in enumerate(('trajectory_mean_rms', 'covariance_max_abs')):
-                    axes[i, j].loglog([r['dt'] for r in group], [r[metric] for r in group],
-                                      'o-', label=method.replace('_', ' '))
-                    axes[i, j].grid(alpha=.2)
-                    axes[i, j].set_xlabel('dt')
-            axes[0, j].set_title(scenario.replace('_', ' '))
-        axes[0, 0].set_ylabel('Paired means RMS error')
-        axes[1, 0].set_ylabel('Max covariance error')
-        axes[0, 0].legend(fontsize=8)
-        fig.suptitle(f"Delta={delta:g}; B={metadata['batch']}; T={metadata['duration']} — valid runs only")
-        fig.tight_layout()
-        fig.savefig(output/f'convergence_delta{delta:g}.png', dpi=160)
-        plt.close(fig)
+    # Site/user matplotlibrc files may enable TeX without installing its fonts.
+    # These plain-text diagnostics must render without external TeX programs.
+    with plt.rc_context({'text.usetex': False, 'font.family': 'DejaVu Sans',
+                         'mathtext.fontset': 'dejavusans'}):
+        for delta in metadata['splittings']:
+            fig, axes = plt.subplots(2, len(metadata['scenarios']), figsize=(13, 6), squeeze=False)
+            for j, scenario in enumerate(metadata['scenarios']):
+                for method in METHODS:
+                    group = sorted((r for r in candidates if r['delta'] == delta and
+                                    r['scenario'] == scenario and r['method'] == method and
+                                    r['status'] == 'ok'), key=lambda r: r['dt'])
+                    for i, metric in enumerate(('trajectory_mean_rms', 'covariance_max_abs')):
+                        axes[i, j].loglog([r['dt'] for r in group], [r[metric] for r in group],
+                                          'o-', label=method.replace('_', ' '))
+                        axes[i, j].grid(alpha=.2)
+                        axes[i, j].set_xlabel('dt')
+                axes[0, j].set_title(scenario.replace('_', ' '))
+            axes[0, 0].set_ylabel('Paired means RMS error')
+            axes[1, 0].set_ylabel('Max covariance error')
+            axes[0, 0].legend(fontsize=8)
+            fig.suptitle(f"Delta={delta:g}; B={metadata['batch']}; T={metadata['duration']} — valid runs only")
+            fig.tight_layout()
+            fig.savefig(output/f'convergence_delta{delta:g}.png', dpi=160)
+            plt.close(fig)
+
+
+def resume_from(output):
+    """Reuse completed references/records; recompute only missing whole runs.
+
+    Configuration comes exclusively from the saved metadata. No CLI overrides
+    apply, so noise seeds, controller intervals and physical parameters agree.
+    """
+    saved = json.loads((output/'results.json').read_text())
+    metadata, rows = saved['metadata'], saved['results']
+    if metadata['torch_version'] != torch.__version__ or metadata['control_dt'] != CONTROL_DT:
+        raise ValueError('Resume requires the original Torch version and controller interval')
+    args = argparse.Namespace(**metadata)
+    args.output = str(output)
+    torch.set_num_threads(args.threads)
+    cases = [(delta, scenario) for delta in args.splittings for scenario in args.scenarios]
+    jobs = [(method, 2**level, scenario, delta) for delta, scenario in cases
+            for method in METHODS for level in args.levels]
+    def key(row):
+        return row['method'], row['substeps'], row['scenario'], row['delta']
+    indexed = {key(row): row for row in rows}
+    expected = set(jobs) | {('platen', n, s, d) for d, s in cases for n in (128, 256)}
+    if len(indexed) != len(rows) or not set(indexed) <= expected:
+        raise ValueError('Duplicate or unexpected saved result records')
+    for row in rows:
+        expected_role = ({128: 'reference_halving_check', 256: 'finer_reference'}
+                         .get(row['substeps'], 'candidate'))
+        if row['role'] != expected_role or row['dt'] != CONTROL_DT/row['substeps']:
+            raise ValueError('Inconsistent saved role or timestep')
+    for delta, scenario in cases:
+        for substeps in (128, 256):
+            if ('platen', substeps, scenario, delta) not in indexed:
+                raise ValueError('Resume requires both completed reference records per case')
+    jobs = [job for job in jobs if job not in indexed]
+    print(f'Resuming {len(jobs)} missing runs; preserving {len(rows)} saved records.', flush=True)
+    estimates = calibrate_runtime(args, jobs)
+    progress = ProgressLog(output, jobs, estimates, args.progress_seconds)
+    metadata = metadata | {'resume_count': metadata.get('resume_count', 0) + 1}
+    scratch = output/'.history'
+    scratch.mkdir(exist_ok=True)
+    for delta, scenario in cases:
+        pending = [job for job in jobs if job[2:] == (scenario, delta)]
+        if not pending:
+            continue
+        ref_row = indexed['platen', 128, scenario, delta]
+        check_row = indexed['platen', 256, scenario, delta]
+        progress.log(f'Loading saved reference: Delta={delta:g} {scenario}')
+        with np.load(output/f'reference_delta{delta:g}_{scenario}.npz') as archive:
+            reference = archive['reference']
+        expected_shape = (round(ref_row['completed_time']/CONTROL_DT)+1, 5, args.batch, 5, 5, 3)
+        if reference.shape != expected_shape or reference.dtype != np.float64:
+            raise ValueError('Saved reference shape/precision does not match metadata')
+        reference_ok = (ref_row['status'] == check_row['status'] == 'ok'
+                        and ref_row['completed_time'] == check_row['completed_time'] == args.duration)
+        for method, substeps, _, _ in pending:
+            row, history = run_accuracy(method, substeps, scenario, delta, args,
+                                        progress, scratch/'candidate.npy')
+            row['role'] = 'candidate'
+            compare(row, history, reference)
+            row.update(reference_valid=reference_ok,
+                       reference_trajectory_mean_rms=ref_row['trajectory_mean_rms'],
+                       reference_covariance_max_abs=ref_row['covariance_max_abs'],
+                       trajectory_error_above_reference_floor=bool(
+                           row['trajectory_mean_rms'] > 5*ref_row['trajectory_mean_rms']))
+            if scenario == 'seeded_policy' and not args.skip_benchmark:
+                progress.log(f'BPTT timing worker: {method} dt={row["dt"]:.8g}')
+                row.update(benchmark(method, substeps, delta, args))
+            rows.append(row)
+            save_results(output, metadata, rows)
+            progress.log(f"{method} dt={row['dt']:.8g} {row['status']} "
+                         f"path={row['trajectory_mean_rms']:.3g} cov={row['covariance_max_abs']:.3g}")
+            del history
+        del reference
+    save_results(output, metadata, rows)
+    for name in ('reference', 'finer', 'candidate'):
+        (scratch/f'{name}.npy').unlink(missing_ok=True)
+    scratch.rmdir()
+    write_report(output, metadata, rows)
+    progress.log(f'Resume complete; {len(rows)} total records. Results: {output}')
 
 
 def main():
@@ -457,8 +542,13 @@ def main():
     parser.add_argument('--estimate-only', action='store_true',
                         help='Calibrate runtime with short full-batch probes, then exit')
     parser.add_argument('--report-only', type=Path, help='Regenerate report/plots from an existing results directory')
+    parser.add_argument('--resume-from', type=Path,
+                        help='Resume missing runs using existing results, references and saved configuration; ignores overrides')
     parser.add_argument('--worker', help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.resume_from:
+        resume_from(args.resume_from)
+        return
     if args.report_only:
         saved = json.loads((args.report_only/'results.json').read_text())
         write_report(args.report_only, saved['metadata'], saved['results'])
