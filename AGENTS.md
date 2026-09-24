@@ -60,6 +60,7 @@ experimental Python source file, not a standard importable module.
 | `n_particle_combined_RL.py` | Main N-by-N array trainer combining cold damping and parametric feedback. Saves `weights/n_particle_combined_rl.pth`. |
 | `train_array_feedback.py` | New 5x5 residual-LQR trainer with centroid/physical-force costs, a fixed-step horizon curriculum, explicit remote benchmark/evaluation modes, and tiny CPU smoke mode. Uses argparse. |
 | `validate_array_training.py` | Tiny CPU/eager assertions for physical costs, LQR, feedback gradients, curriculum, CLI safety, and checkpoint replay. No compilation or long trajectories. |
+| `diagnose_array_batch.py` | Remote fixed-policy gradient variance, direction agreement, timing and GPU memory by batch/horizon; no weight updates. `--smoke` is tiny CPU/eager only. |
 | `combined_cooling_RL.py`, `parametric_RL.py` | Earlier combined-feedback and parametric-only training experiments. |
 | `single_particle_RL.py`, `two_particle_RL.py` | Earlier small-system policy-learning experiments. |
 | `compare_lqr_rl_cooling.py` | Compares analytic grid LQR feedback against a saved RL policy. |
@@ -160,7 +161,7 @@ existing convention and verify imports when moving code.
 - Use small runs first, set NumPy/Torch seeds for reproducibility when relevant,
   and use `MPLBACKEND=Agg uv run scripts/<name>.py` for headless plots.
 - For the new array trainer, run only `validate_array_training.py` and
-  `train_array_feedback.py --smoke` locally unless instructed otherwise.
+  `train_array_feedback.py --smoke` and `diagnose_array_batch.py --smoke` locally unless instructed otherwise.
   Training, compilation benchmarks, and scaling runs belong on remote compute
   servers; see `docs/array_training.md`. Normal runs require explicit batch,
   iteration budget, and output; never substitute old trainers as smoke tests.

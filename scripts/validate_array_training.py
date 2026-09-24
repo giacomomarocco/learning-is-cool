@@ -24,6 +24,7 @@ from learn_to_cool.array_training import (
 )
 from learn_to_cool.gaussian_integrators import action_controls
 import train_array_feedback as cli
+import diagnose_array_batch as batch_diagnostic
 
 
 def physics_and_lqr():
@@ -214,6 +215,39 @@ def cli_and_curriculum(directory):
     print('Import/CLI safety, overwrite refusal and fixed-step curriculum counts: passed')
 
 
+def gradient_statistics():
+    # Hand-computable covariance trace and unbiased squared signal.
+    g = torch.tensor([[1., 2.], [3., 2.], [5., 2.]], dtype=torch.float64)
+    result = batch_diagnostic.summarize_gradients(g, 16)
+    assert math.isclose(result['batch_gradient_noise_trace'], 4.)
+    assert math.isclose(result['signal_squared_unbiased'], 13.-4./3.)
+    assert math.isclose(result['simple_noise_scale'], 64./(13.-4./3.))
+    unresolved = batch_diagnostic.summarize_gradients(torch.tensor([[1.], [-1.]]), 2)
+    assert unresolved['signal_squared_unbiased'] < 0 and unresolved['simple_noise_scale'] is None
+    exact = batch_diagnostic.summarize_gradients(torch.ones(3, 2), 2)
+    assert exact['relative_rms_noise'] == 0
+
+    # Averaging independent trajectory gradients must equal the full-batch
+    # gradient. Reuse explicit paths to test the statistical sampling unit.
+    session = TrainingSession(TrainingConfig(4, 1, dtype='float64', smoke=True))
+    noise = torch.randn((2, 16, 4, 5, 5, 3), dtype=torch.float64,
+                        generator=torch.Generator().manual_seed(83)) * math.sqrt(session.config.dt)
+    before = batch_diagnostic.policy_digest(session.policy)
+    def gradient(paths):
+        session.optimizer.zero_grad(set_to_none=True)
+        rollout(session.model, session.interval, .02, paths.shape[2], noise=paths).loss.backward()
+        return torch.cat([p.grad.flatten() for p in session.policy.parameters()])
+    full = gradient(noise)
+    halves = (gradient(noise[:, :, :2]) + gradient(noise[:, :, 2:]))/2
+    torch.testing.assert_close(full, halves, rtol=1e-10, atol=1e-12)
+    groups = batch_diagnostic.parameter_groups(session.policy)
+    partition = torch.cat([groups[key] for key in ('hidden', 'cold_output', 'parametric_output')])
+    torch.testing.assert_close(partition.sort().values, groups['all'])
+    assert full[groups['hidden']].count_nonzero() == 0  # Zero output initialization.
+    assert batch_diagnostic.policy_digest(session.policy) == before
+    print('Gradient noise estimators, control groups and independent-trajectory averaging: passed')
+
+
 def main():
     torch.set_num_threads(1)
     with tempfile.TemporaryDirectory(prefix='array-training-validation-') as name:
@@ -224,6 +258,7 @@ def main():
         cli_and_curriculum(empty)
         physics_and_lqr()
         feedback_gradient()
+        gradient_statistics()
         resume_and_training(checkpoints)
     print('All CPU/eager smoke checks passed. Compilation and remote-scale behavior remain untested.')
 

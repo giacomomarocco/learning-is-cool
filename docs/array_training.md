@@ -175,6 +175,42 @@ directional occupations, and covariance health. It does not claim a steady
 state from a finite duration. Use independent evaluation and timestep refinement
 before interpreting trained-policy improvements as physical cooling results.
 
+## Batch-size diagnostics
+
+Run fixed-weight gradient diagnostics remotely, separately for each batch size
+and policy snapshot. Omit `--checkpoint` for the original seeded initialization.
+No optimizer updates are performed and no checkpoint is modified.
+
+```sh
+uv run scripts/diagnose_array_batch.py --device cuda --compile --batch-size 16 --durations 5 20 100 --repeats 16 16 8 --checkpoint data/array_training/train-001/checkpoint.pt --output data/array_training/batch-diagnostic-001
+```
+
+Repeat for batches 32 and 64. Independent noise batches estimate raw gradient
+variance before clipping, with reports for all parameters, hidden layers,
+cold-output parameters and parametric-output parameters. Hidden parameters serve
+both control types; these groups are not gradients of separate cost components.
+At zero-output initialization the hidden-layer gradients are exactly zero.
+
+For R independent batch-mean gradients, S is the sample covariance trace.
+The squared mean signal is estimated by `||mean_gradient||² - S/R`; the simple
+gradient noise scale is `batch_size*S/signal_squared`. Ratios are left undefined
+when the corrected signal is nonpositive. A delete-one jackknife standard error
+helps identify weak signal estimates. Pairwise cosine similarities measure
+direction agreement without fitting a reference direction to the same batch.
+These statistics guide experiments, not an optimal batch-size claim for Adam.
+See [McCandlish et al.](https://arxiv.org/abs/1812.06162) for the noise-scale idea.
+
+The output includes raw gradient vectors, seeds, per-trial costs and covariance
+health, full-horizon forward/backward timings, and CUDA peak allocated memory.
+A two-interval compilation warmup is excluded from timings. Peaks exclude Adam
+moment buffers; CUDA reserved memory reflects the allocator's history. An OOM
+is recorded explicitly, never treated as a successful measurement. Evaluate
+learning progress separately before choosing a production batch size.
+
+Only `--smoke` is intended locally; it uses three batch-2, T=0.02 CPU/eager
+trials and temporary outputs. Estimator and matched-path batch-averaging checks
+are included in `validate_array_training.py`.
+
 ## First Perlmutter GPU pilot (2026-09-24)
 
 Source `02c9336` completed an interactive Perlmutter run using one A100-SXM4-40GB
