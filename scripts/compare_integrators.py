@@ -255,7 +255,7 @@ def save_results(output, metadata, rows):
         {'metadata': metadata, 'results': rows}), indent=2, allow_nan=False)+'\n')
     fields = list(dict.fromkeys(k for r in rows for k in r))
     with (output/'results.csv').open('w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=fields)
+        writer = csv.DictWriter(f, fieldnames=fields, lineterminator='\n')
         writer.writeheader()
         writer.writerows(rows)
 
