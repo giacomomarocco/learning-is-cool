@@ -174,3 +174,33 @@ It reports time-averaged centroid cost, force cost, their sum, terminal
 directional occupations, and covariance health. It does not claim a steady
 state from a finite duration. Use independent evaluation and timestep refinement
 before interpreting trained-policy improvements as physical cooling results.
+
+## First Perlmutter GPU pilot (2026-09-24)
+
+Source `02c9336` completed an interactive Perlmutter run using one A100-SXM4-40GB
+per compute step, PyTorch 2.10.0+cu128, and float32 with TF32 disabled. The
+allocation was released after completion; no remote jobs are left running by
+this pilot. No implementation changes were required.
+
+For batch 16 and T=0.1, compiled and eager losses/gradients agreed within the
+benchmark tolerances. Warmed forward/backward time averaged **0.0240 s compiled
+versus 0.4953 s eager** (20.6x); the first compiled call took **170.35 s**.
+These timings describe this short window and hardware, not a universal speedup.
+
+Compiled batch-16 training completed all **20/5/1 updates at T=5/20/100** with
+the fixed timestep and controller interval. Summed update time was **93.72 s**;
+the complete training job step took **1m44s** including startup. There were no
+covariance-health failures, and the T=100 update took 31.35 s. Microbatching and
+time checkpointing were not needed at this batch size.
+
+Independent paired evaluation (64 trajectories, T=100) gave total objectives
+**15.8561 learned versus 15.8950 LQR**, a paired difference of **-0.0389 ± 0.0777**
+(one SEM). This does not establish an overall improvement. Terminal x/y/z
+occupations were approximately **0.475/0.494/9.923**; axial cooling remains
+unresolved. Longer training, training-seed checks, and learned-policy timestep
+refinement remain outstanding.
+
+Local artifacts are in the ignored directory
+`data/array_training/perlmutter_20260924T214052Z/`; the research run log is
+`notes/array_training/perlmutter_pilot_20260924.md`. These generated artifacts
+are not included in a fresh Git checkout.
