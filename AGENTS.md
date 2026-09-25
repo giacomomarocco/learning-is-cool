@@ -153,6 +153,12 @@ existing convention and verify imports when moving code.
 
 ## Validation and documentation
 
+- For future array-training runs, try batch size **64** as the provisional
+  choice agreed on 2026-09-25. Perlmutter A100 diagnostics support its memory
+  feasibility, throughput, and gradient-variance reduction, but improved
+  convergence, cooling performance, and batch-size optimality remain unproven.
+  See `docs/array_training.md`; this is an experimental choice, not a validated
+  training default.
 - There is no configured pytest suite or lint command in `pyproject.toml`.
   The `test_*.py` files are simulation/plotting diagnostics, not a uniform
   assertion-based test suite. Do not assume pytest collection is harmless.

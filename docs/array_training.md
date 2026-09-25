@@ -229,9 +229,12 @@ At the saved pilot policy:
 
 Times are medians, excluding compilation warmup and optimizer steps. Across
 both policies and all horizons, B64 reduced variance to 0.237–0.302 times B16
-and increased trajectory throughput 3.64–3.88x. **B64 is the recommended next
-training batch on this hardware**, with existing optimizer settings as the
-starting point. It is the largest batch tested, not a demonstrated optimum.
+and increased trajectory throughput 3.64–3.88x. **Decision (2026-09-25): try
+batch 64 for future array-training runs as a provisional, unproven choice**,
+with existing optimizer settings as the starting point. The diagnostics support
+its use on this hardware, but improved training convergence and cooling
+performance remain unproven. It is the largest batch tested, not a demonstrated
+optimum or validated training default.
 
 Overall gradient agreement can hide weak parametric signals. At the pilot
 policy with B64, pairwise parametric-output gradient cosine averaged 0.888 at
