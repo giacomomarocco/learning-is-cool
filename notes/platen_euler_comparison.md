@@ -5,6 +5,12 @@ continue to use `integration_method="legacy"`. No policy checkpoint is loaded,
 trained or overwritten. The scripts use argparse rather than the repository's
 `key=value` helper.
 
+**Extended comparison completed:** all 192 records were verified on Perlmutter
+on 2026-09-24. Platen at dt=0.0003125 passes the joint 0.01 error criterion
+across all three splittings and all four scenarios. Euler–Maruyama has no
+qualifying timestep at that tolerance. See the final results below; the generic
+environment's legacy default was not changed by this comparison.
+
 ## Model and conventions
 
 There are 25 sites and three modes per site. With zero-based indices,
@@ -154,7 +160,7 @@ pass `generator=`. Compile `step` or `_integrated_step` when later studying
 compilation; the locally existing `_step_impl` is the legacy core. This task
 makes no change to training defaults or checkpoint formats.
 
-## Results (2026-09-24)
+## Local smoke results (2026-09-24)
 
 Completed on the local CPU, PyTorch 2.10.0, one thread, seed 20260924:
 
@@ -171,9 +177,9 @@ Completed on the local CPU, PyTorch 2.10.0, one thread, seed 20260924:
   environment, including internally generated noise. The separately staged
   version is checked against its own committed baseline before commit.
 
-The full extended profile (T=20, batch 256, three splittings) has **not** been
-run locally. CUDA is unavailable. Consequently these results support a next
-experiment, not a universal training-integrator choice or GPU speed claim.
+These smoke runs used the local CPU, where CUDA is unavailable. The extended
+Perlmutter results below supersede the smoke-only timestep recommendation for
+T=20. Neither CPU study establishes compiled CUDA training throughput.
 
 ### Stability and accuracy
 
@@ -224,7 +230,7 @@ moments of each discrete linear mean update. Halving h reduces EM's expected
 occupation error by about two and Platen's by about four, confirming first-
 and second-order weak heating convergence without sampling noise.
 
-### Next training experiment
+### Smoke-only training recommendation (superseded for T=20)
 
 Use a small **Platen float32 pilot at dt=0.000625**, with the controller updated
 every 0.01 (16 integration steps per action). Keep combined modulation bounded
@@ -324,7 +330,8 @@ verified from a fresh connection. Estimated completion is 22:10–22:30 UTC
 (15:10–15:30 Pacific), subject to later I/O and timing overhead. This replaces
 cancelled job 58835882, whose early partial output is preserved in
 `extended_cpu/`. The launcher merges and releases the allocation automatically.
-The extended results and any decision about the training default are pending.
+This attempt subsequently failed as described below; final results are now
+available in the last section.
 
 ### Recovering the interrupted extended run
 
@@ -361,8 +368,141 @@ archives remain unchanged, completed cases do no integration, duplicates are
 rejected, and reports render even when site settings request TeX and all TeX
 calls are forced to fail. The existing full integrator assertions also passed.
 
-**Recovery active, 2026-09-24 22:46 UTC:** interactive CPU job 58839589 on
+**Recovery launch, 2026-09-24 22:46 UTC:** interactive CPU job 58839589 on
 `nid004142`, account `m5258`, in the same detached tmux session on `login01`.
 The compute-node preflight passed and all unfinished cases are progressing.
 Only 36 missing runs are being recomputed. The updated completion estimate is
 23:15–23:30 UTC (16:15–16:30 Pacific), allowing for timing/merge overhead.
+
+## Final extended results (completed 2026-09-24)
+
+The resumed allocation **58839589 completed successfully at 23:13:18 UTC
+(16:13:18 Pacific)**, after 28m48s, and was released automatically. The merge
+contains all **192 records**: 168 candidates and 24 reference runs, covering
+batch 256, T=20, three splittings, four scenarios, seven timesteps per method,
+and both float64 reference resolutions. Candidate precision is also float64.
+All 42 isolated short-window forward/backward measurements completed with
+finite losses and gradients. These were eager CPU trials on Perlmutter with
+PyTorch 2.10.0+cu128 and one Torch thread per case.
+
+Downloaded JSON/CSV SHA-256 hashes match the remote files. Every merged record
+matches its per-case file, and all 156 records saved before recovery remain
+exactly unchanged, including their original timing measurements. The existing
+integrator assertions, resume equivalence check, and compute-node plotting
+preflight passed. Convergence figures were generated successfully; the Delta=1
+figure was visually checked.
+
+### Accuracy and covariance health
+
+The strict criterion requires **both** controller-time means RMS and maximum
+absolute covariance error to be at most 0.01 in **every scenario**. Reference
+halving errors must be below 0.002. The fastest qualifying Platen choices are:
+
+| Splitting Delta | Platen dt | Substeps per controller update | Worst means RMS | Worst covariance error |
+|---:|---:|---:|---:|---:|
+| 0.01 | 0.0025 | 4 | 0.008897 | 0.002490 |
+| 0.1 | 0.00125 | 8 | 0.005149 | 0.001732 |
+| 1 | 0.0003125 | 32 | 0.004042 | 0.003435 |
+
+Euler–Maruyama has no qualifying run at tolerance 0.01 for any splitting in the
+requested sweep. At Delta=1, even its finest dt=0.00015625 has worst means RMS
+0.7345 and covariance error 0.7116. Platen at dt=0.000625 has errors 0.01187 and
+0.01218 there: the T=3 smoke recommendation narrowly misses the T=20 criterion.
+
+All 24 references completed without covariance/nonfinite failures. The largest
+reference-halving differences are 0.000756 (means RMS) and 0.000547 (covariance
+maximum), sufficiently below the strict threshold; finest-grid errors are
+still relative to a finite-resolution reference.
+
+Of 84 candidates per method, Platen has **80 valid runs**, two finite runs with
+covariance failures, and two nonfinite runs. All four failures occur at
+Delta=1, dt=0.01. Every finer Platen timestep is covariance-valid in all cases.
+Euler has **49 valid runs**, four finite covariance failures, and 31 nonfinite
+runs. Its largest timestep valid in every scenario is 0.0025 for Delta=0.01
+and 0.1, and 0.00015625 for Delta=1. Numerical validity alone does not imply
+acceptable accuracy. Every failed candidate recorded uncertainty violations
+and nonpositive covariance diagonals without clipping; per-step counts and
+first-failure times are retained in the tables.
+
+For the fixed untrained policy at Delta=1, Platen dt=0.0003125 has paired
+terminal occupation differences (x,y,z) of
+(0.0000877, 0.0000983, 0.0000102), with paired SEM
+(0.0002084, 0.0001756, 0.0000328). The corresponding reference occupations are
+(7.3362, 6.8803, 6.0206). This is a numerical comparison, not evidence of learned
+cooling performance.
+
+### Heating check
+
+The analytic no-feedback expectation at T=20 is 6 per direction. Float64
+Platen reference results (mean +/- one SEM) are:
+
+| Delta | x occupation | y occupation | z occupation |
+|---:|---:|---:|---:|
+| 0.01 | 6.0441 +/- 0.0728 | 6.0144 +/- 0.0683 | 6.0427 +/- 0.0726 |
+| 0.1 | 5.9853 +/- 0.0701 | 6.0173 +/- 0.0831 | 6.0527 +/- 0.0745 |
+| 1 | 5.9702 +/- 0.0737 | 5.9532 +/- 0.0756 | 5.9560 +/- 0.0761 |
+
+All nine values are within 0.71 SEM of the analytic expectation.
+
+### Speed at matched acceptance thresholds
+
+These comparisons require all four scenarios to meet the same joint error
+threshold and covariance checks. Times cover forward plus backward over the
+0.1-unit seeded-policy window, with batch 256:
+
+| Delta | Tolerance | Euler dt / seconds | Platen dt / seconds | Measured speed ratio |
+|---:|---:|---:|---:|---:|
+| 0.01 | 0.1 | 0.0003125 / 1.221 | 0.01 / 0.0852 | 14.34x |
+| 0.01 | 0.05 | 0.00015625 / 2.469 | 0.005 / 0.1945 | 12.70x |
+| 0.1 | 0.1 | 0.00015625 / 2.397 | 0.01 / 0.0820 | 29.24x |
+
+There is no matched-threshold speed ratio at Delta=1 because Euler does not
+qualify even at tolerance 0.1. Platen dt=0.00125 passes 0.1 and 0.05 there;
+dt=0.0003125 passes 0.01. These are single eager measurements, including runs
+on the original and resumed CPU allocations with different concurrent case
+counts; they do not establish a GPU speed ratio or timing uncertainty.
+
+At the strict Delta=1 Platen choice, forward/backward take **1.078/1.347 s**
+over the 0.1-unit window. Reported peak process RSS is **3522.9 MiB**. RSS is a
+whole-process high-water measure, including runtime/noise/launch overhead, not
+the memory of live autograd tensors; repeated RSS plateaus make it unsuitable
+for claiming a method-specific memory advantage here. Full-T training memory
+and CUDA peak allocated memory were not measured by this CPU comparison.
+
+### Recommendation for the next training experiment
+
+Choose **Platen** for the next training experiment. For one timestep spanning
+all three splittings, start at **dt=0.0003125**, with controller updates every
+0.01 (32 held-action substeps). Retain the agreed recoil model, modulation
+bounds, initial state and unmasked covariance-health logging. Use a new output
+checkpoint path. Verify the selected float32 rollout against the float64 path
+and repeat a short paired test at dt=0.00015625 as the policy changes.
+
+The completed extended sweep establishes float64 accuracy for the prescribed
+signals and fixed untrained network. The earlier float32 smoke and separate
+GPU training pilot do not replace a float32/trained-policy timestep check at
+the new horizon. The existing residual-array trainer documented in
+`docs/array_training.md` already uses Platen at Delta=0.1, dt=0.000625; that is
+finer than the 0.00125 threshold found here, so this comparison does not call
+for changing its current timestep. Its trained policy still needs refinement
+checks. This task leaves the generic environment's legacy default unchanged.
+
+### Delivered artifacts
+
+- Versioned full tables: `data/integrator_comparison/extended_results.json`
+  and `extended_results.csv`. They include all requested occupations,
+  covariance errors, paired path differences, failures, timing and memory.
+- Local report and three convergence figures:
+  `notes/integrator_comparison/extended_perlmutter/`.
+- Local compact audit archive:
+  `notes/integrator_comparison/completed_audit_20260924.tar.gz`.
+- Remote case files and large reference trajectories:
+  `$SCRATCH/integrator_comparison_20260924/extended_cpu_persistent/`.
+- Running log, including the reporting failure and recovery:
+  `notes/integrator_comparison/extended_run_log.md`, also copied to `RUN_LOG.md`
+  at the remote run root.
+
+The downloaded JSON SHA-256 is
+`2145940bcf1ef92da2a8946bcdc5b7438d206d1582a60bb069d132c5387a3ab0`;
+the CSV SHA-256 is
+`b39e7b5d2fa4b87245fd4d2d026103d5d7559bbd4d3ee91902298ea91661b7dc`.
